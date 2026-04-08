@@ -1,0 +1,217 @@
+{%- extends "base.html" -%}
+
+{% block title %}[RX:{{ review.rx_id }}] Review: {{ review.paper_title }}{% endblock %}
+
+{% block banner %}
+<a href="{{ url_for('review_browse.home') }}">Parallel Review</a> &gt;
+<a href="{{ url_for('review_browse.forum', id=review.rx_id) }}">RX:{{ review.rx_id }}</a>
+{% endblock %}
+
+{%- block content %}
+
+<div id="forum-outer" class="clearfix">
+  <div class="leftcolumn">
+
+    {# ---- Paper Note (header) ---- #}
+    <div class="forum-note">
+      <div class="forum-title">
+        <h2>{{ review.paper_title }}</h2>
+        <div class="pdf-link">
+          <a href="{{ url_for('review_browse.pdf', id=review.rx_id) }}">Review PDF</a>
+        </div>
+      </div>
+
+      <div class="forum-authors">
+        <a href="{{ url_for('review_browse.notes', **{'content.author': review.paper_author}) }}">{{ review.paper_author }}</a>
+      </div>
+
+      <div class="forum-meta">
+        <span class="item">&#128197; {{ review.date_short }}</span>
+        <span class="item">&#128269; Reviewed by {{ review.reviewer }}</span>
+        {% if review.paper_pages_url %}
+        <span class="item"><a href="{{ review.paper_pages_url }}">View Paper</a></span>
+        {% endif %}
+        <span class="item"><a href="{{ review.github_url }}">GitHub</a></span>
+      </div>
+    </div>
+
+    {# ---- Main Review (Official Review card) ---- #}
+    <div class="note depth-even">
+      <div class="heading">
+        <h4>Official Review</h4>
+      </div>
+      <div class="subheading">
+        <span class="invitation" style="background:var(--or-badge-review);">Official Review</span>
+        <span class="signatures">by {{ review.reviewer }}</span>
+        <span>{{ review.date_short }}</span>
+      </div>
+
+      {# Summary #}
+      {% if review.summary %}
+      <ul class="note-content">
+        <li>
+          <span class="field-label">Paper Summary: </span>
+          <span class="field-value">{{ review.summary }}</span>
+        </li>
+      </ul>
+      {% endif %}
+
+      {# Strengths #}
+      {% if review.strengths %}
+      <div style="margin-bottom:0.75rem;">
+        <span class="field-label" style="color:var(--or-red);font-weight:700;font-size:0.75rem;">Strengths:</span>
+        <div style="margin-top:0.25rem;">
+          {% for line in review.strengths.split('\n') %}
+          {% set stripped = line.strip() %}
+          {% if stripped and (stripped.startswith('-') or stripped.startswith('*') or stripped[0].isdigit()) %}
+          {% set text = stripped.lstrip('-*0123456789. ') %}
+          <div class="strength-item">{{ text }}</div>
+          {% elif stripped %}
+          <div class="strength-item">{{ stripped }}</div>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {# Major Issues #}
+      {% if review.major_issues %}
+      <div style="margin-bottom:0.75rem;">
+        <span class="field-label" style="color:var(--or-red);font-weight:700;font-size:0.75rem;">Major Issues ({{ review.issues.major }}):</span>
+        <ul class="issue-list">
+          {% for line in review.major_issues.split('\n') %}
+          {% set stripped = line.strip() %}
+          {% if stripped and (stripped[0].isdigit() or stripped.startswith('-')) %}
+          {% set text = stripped.lstrip('-*0123456789. ') %}
+          <li class="issue-item issue-major">
+            <div class="issue-title">{{ text }}</div>
+          </li>
+          {% elif stripped and stripped.lower().startswith('recommendation:') %}
+          <li class="issue-item issue-major">
+            <div class="issue-rec">{{ stripped }}</div>
+          </li>
+          {% endif %}
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {# Minor Issues #}
+      {% if review.minor_issues %}
+      <div style="margin-bottom:0.75rem;">
+        <span class="field-label" style="color:var(--or-red);font-weight:700;font-size:0.75rem;">Minor Issues ({{ review.issues.minor }}):</span>
+        <ul class="issue-list">
+          {% for line in review.minor_issues.split('\n') %}
+          {% set stripped = line.strip() %}
+          {% if stripped and (stripped[0].isdigit() or stripped.startswith('-')) %}
+          {% set text = stripped.lstrip('-*0123456789. ') %}
+          <li class="issue-item issue-minor">
+            <div class="issue-title">{{ text }}</div>
+          </li>
+          {% endif %}
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      {# Very Minor Issues #}
+      {% if review.very_minor_issues %}
+      <div style="margin-bottom:0.75rem;">
+        <span class="field-label" style="color:var(--or-red);font-weight:700;font-size:0.75rem;">Very Minor Issues:</span>
+        <ul class="issue-list">
+          {% for line in review.very_minor_issues.split('\n') %}
+          {% set stripped = line.strip() %}
+          {% if stripped and (stripped[0].isdigit() or stripped.startswith('-')) %}
+          {% set text = stripped.lstrip('-*0123456789. ') %}
+          <li class="issue-item issue-vminor">
+            <div class="issue-title">{{ text }}</div>
+          </li>
+          {% endif %}
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+    </div>
+
+    {# ---- Maths Audit card ---- #}
+    {% if review.maths_audit %}
+    <div class="note depth-odd">
+      <div class="heading">
+        <h4>Mathematical Consistency Audit</h4>
+      </div>
+      <div class="subheading">
+        <span class="invitation" style="background:var(--or-badge-meta);">Mathematics Audit</span>
+        <span class="signatures">by {{ review.reviewer }}</span>
+      </div>
+      <div class="note-content-container">
+        <ul class="note-content">
+          <li>
+            <span class="field-label">Audit Results: </span>
+            <span class="field-value">{{ review.maths_audit }}</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+    {% endif %}
+
+    {# ---- Numerics Audit card ---- #}
+    {% if review.numerics_audit %}
+    <div class="note depth-even">
+      <div class="heading">
+        <h4>Numerical Results Audit</h4>
+      </div>
+      <div class="subheading">
+        <span class="invitation" style="background:var(--or-badge-decision);">Numerics Audit</span>
+        <span class="signatures">by {{ review.reviewer }}</span>
+      </div>
+      <div class="note-content-container">
+        <ul class="note-content">
+          <li>
+            <span class="field-label">Audit Results: </span>
+            <span class="field-value">{{ review.numerics_audit }}</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+    {% endif %}
+
+    {# ---- Submission History ---- #}
+    {% if review.versions and review.versions|length > 1 %}
+    <div class="submission-history">
+      <h3>Submission history</h3>
+      {% for v in review.versions %}
+      {% if v.version == review.version %}
+      <strong>[v{{ v.version }}]</strong>
+      {% else %}
+      <a href="{{ url_for('review_browse.forum', id=review.rx_id, v=v.version) }}">[v{{ v.version }}]</a>
+      {% endif %}
+      {{ v.review_date }}
+      {% if not loop.last %}<br>{% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+
+  </div>
+
+  {# ---- Sidebar ---- #}
+  <div class="extra-services">
+    <h3>Access Review</h3>
+    <ul>
+      <li><a href="{{ url_for('review_browse.pdf', id=review.rx_id) }}">Review PDF</a></li>
+      <li><a href="{{ review.pages_url }}">Review Page</a></li>
+      <li><a href="{{ review.github_url }}">GitHub</a></li>
+    </ul>
+    {% if review.paper_pages_url %}
+    <h3>Paper</h3>
+    <ul>
+      <li><a href="{{ review.paper_pages_url }}">View Paper</a></li>
+    </ul>
+    {% endif %}
+    <h3>Citation</h3>
+    <ul>
+      <li>RX:{{ review.rx_id }}</li>
+    </ul>
+  </div>
+</div>
+
+{%- endblock %}

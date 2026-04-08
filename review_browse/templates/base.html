@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>{% block title %}Parallel Review{% endblock %}</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='70'>&#9998;</text></svg>">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+
+  <nav class="navbar">
+    <div class="navbar-inner">
+      <a class="navbar-brand" href="{{ url_for('review_browse.home') }}">PARALLEL<strong>REVIEW</strong></a>
+      <div class="navbar-links">
+        <a href="{{ url_for('review_browse.group', id='recent') }}">All Reviews</a>
+        <a href="https://papers.parallelscience.org">Papers</a>
+        <a href="https://parallelscience.org">ParallelScience</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="banner">
+    <div class="banner-inner">
+      {% block banner %}
+      <span>Open AI-powered peer review for autonomous research</span>
+      {% endblock %}
+    </div>
+  </div>
+
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+
+  <footer class="footer">
+    <a href="https://github.com/ParallelScience">ParallelScience</a>
+    &middot; Powered by <a href="https://skepthical.com">Skepthical</a>
+    &middot; Inspired by <a href="https://openreview.net">OpenReview</a>
+  </footer>
+
+</body>
+</html>

@@ -1,0 +1,23 @@
+[project]
+name = "parallel-review"
+version = "0.1.0"
+description = "OpenReview-style review listing site for AI-reviewed research papers"
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0,<4",
+    "gunicorn>=23.0,<24",
+    "pydantic>=2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["review_browse"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,0 +1,39 @@
+{%- extends "base.html" -%}
+
+{% block title %}{{ context }} — Parallel Review{% endblock %}
+
+{% block banner %}
+<span>{{ context }}</span>
+{% endblock %}
+
+{%- block content %}
+
+<h3 style="margin-bottom:0.75rem;">{{ context }} <span style="font-size:0.875rem;color:#616161;font-weight:400;">({{ reviews|length }} review{{ 's' if reviews|length != 1 }})</span></h3>
+
+{% if reviews %}
+<ul class="review-list">
+  {% for r in reviews %}
+  <li class="review-list-item">
+    <h4><a href="{{ url_for('review_browse.forum', id=r.rx_id) }}">{{ r.paper_title }}</a></h4>
+    <div class="paper-author">
+      <a href="{{ url_for('review_browse.notes', **{'content.author': r.paper_author}) }}">{{ r.paper_author }}</a>
+    </div>
+    <div class="review-meta-info">
+      <span>{{ r.date_short }}</span>
+      <span class="badge badge-review">Official Review</span>
+      <span>by {{ r.reviewer }}</span>
+      {% if r.issues.major > 0 %}
+      <span class="issue-counts">
+        <span class="major">{{ r.issues.major }} major</span>
+        <span class="minor">{{ r.issues.minor }} minor</span>
+      </span>
+      {% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p style="color:#616161;">No reviews found.</p>
+{% endif %}
+
+{%- endblock %}
