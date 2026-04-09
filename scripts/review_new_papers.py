@@ -273,6 +273,9 @@ def run_skepthical_review(pdf_path: str, work_dir: str) -> dict:
         # High thoroughness: 2 reviewer runs
         "n_total_review": 2,
         "total_reviewer_models": ["gpt-5", "gpt-5"],
+
+        # Paper scoring (1-10 ratings)
+        "get_score": True,
     }
 
     sk = Skepthical(params_skepthical=params)
@@ -308,11 +311,16 @@ def run_skepthical_review(pdf_path: str, work_dir: str) -> dict:
     if pdf_files:
         review_pdf = pdf_files[-1]
 
-    return {"report_md": review_md, "report_pdf": review_pdf, "total_cost": total_cost}
+    # Extract scores
+    scores = None
+    if isinstance(report, dict):
+        scores = report.get("scores")
+
+    return {"report_md": review_md, "report_pdf": review_pdf, "total_cost": total_cost, "scores": scores}
 
 
 def publish_review(paper: dict, review_md: str, review_pdf: str, paper_pdf: str,
-                    total_cost: float | None = None) -> str:
+                    total_cost: float | None = None, scores: dict | None = None) -> str:
     """Publish a review to a GitHub Pages repo. Returns the pages URL."""
     from datetime import datetime, timezone, timedelta
 
@@ -328,6 +336,9 @@ def publish_review(paper: dict, review_md: str, review_pdf: str, paper_pdf: str,
     if total_cost is not None:
         with open(os.path.join(publish_dir, "cost.json"), "w") as f:
             json.dump({"total_cost": total_cost}, f)
+    if scores is not None:
+        with open(os.path.join(publish_dir, "scores.json"), "w") as f:
+            json.dump(scores, f)
 
     # Build the page
     build_script = os.path.join(os.path.dirname(__file__), "build_review_page.py")
@@ -490,6 +501,7 @@ def review_paper(paper: dict) -> bool:
         pages_url = publish_review(
             paper, result["report_md"], result["report_pdf"], pdf_path,
             total_cost=result.get("total_cost"),
+            scores=result.get("scores"),
         )
 
         print(f"  DONE: {pages_url}")

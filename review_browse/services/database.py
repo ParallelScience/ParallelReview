@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS reviews (
     px_id               TEXT NOT NULL DEFAULT '',
     is_current          INTEGER NOT NULL DEFAULT 1,
     total_cost          REAL,
+    score_overall       INTEGER,
+    score_soundness     INTEGER,
+    score_novelty       INTEGER,
+    score_significance  INTEGER,
+    score_clarity       INTEGER,
+    score_evidence      INTEGER,
+    score_justification TEXT NOT NULL DEFAULT '',
     scraped_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     content_hash        TEXT,
     PRIMARY KEY (review_id, version),
@@ -210,11 +217,22 @@ def init_db(app: Flask) -> None:
     conn = _connect()
     try:
         conn.executescript(SCHEMA_SQL)
-        # Migrate: add total_cost column if missing
+        # Migrate: add columns if missing
         cols = {r[1] for r in conn.execute("PRAGMA table_info(reviews)").fetchall()}
-        if "total_cost" not in cols:
-            conn.execute("ALTER TABLE reviews ADD COLUMN total_cost REAL")
-            print("[RX] Migrated: added total_cost column to reviews", flush=True)
+        migrations = [
+            ("total_cost", "ALTER TABLE reviews ADD COLUMN total_cost REAL"),
+            ("score_overall", "ALTER TABLE reviews ADD COLUMN score_overall INTEGER"),
+            ("score_soundness", "ALTER TABLE reviews ADD COLUMN score_soundness INTEGER"),
+            ("score_novelty", "ALTER TABLE reviews ADD COLUMN score_novelty INTEGER"),
+            ("score_significance", "ALTER TABLE reviews ADD COLUMN score_significance INTEGER"),
+            ("score_clarity", "ALTER TABLE reviews ADD COLUMN score_clarity INTEGER"),
+            ("score_evidence", "ALTER TABLE reviews ADD COLUMN score_evidence INTEGER"),
+            ("score_justification", "ALTER TABLE reviews ADD COLUMN score_justification TEXT NOT NULL DEFAULT ''"),
+        ]
+        for col_name, sql in migrations:
+            if col_name not in cols:
+                conn.execute(sql)
+                print(f"[RX] Migrated: added {col_name} column to reviews", flush=True)
         conn.commit()
     finally:
         conn.close()

@@ -204,6 +204,20 @@ def _fetch_cost_json(org: str, repo: str) -> float | None:
         return None
 
 
+def _fetch_scores_json(org: str, repo: str) -> dict | None:
+    """Fetch scores.json from the review repo's Pages site."""
+    import urllib.request
+    url = f"https://{org.lower()}.github.io/{repo}/scores.json"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read())
+        if isinstance(data, dict) and "overall" in data:
+            return data
+        return None
+    except Exception:
+        return None
+
+
 def _looks_like_repo_slug(title: str) -> bool:
     """Return True if title looks like a repo slug rather than a real title."""
     # Repo slugs are all lowercase with hyphens and no spaces
@@ -269,6 +283,11 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
     total_cost = _fetch_cost_json(org, repo)
     if total_cost is not None:
         meta["total_cost"] = total_cost
+
+    # Fetch scores.json if available
+    scores = _fetch_scores_json(org, repo)
+    if scores is not None:
+        meta["scores"] = scores
 
     meta["repo"] = repo
     meta["pages_url"] = f"https://{org.lower()}.github.io/{repo}/"
@@ -389,14 +408,19 @@ def upsert_review(
     # Extract PX ID from the review_id (e.g. "2604.00003-R1" → "2604.00003")
     px_id = review_id.rsplit("-R", 1)[0] if "-R" in review_id else ""
 
+    scores = meta.get("scores") or {}
+
     conn.execute(
         "INSERT INTO reviews "
         "(review_id, version, paper_title, paper_author, review_date, "
         " summary, strengths, major_issues, minor_issues, very_minor_issues, "
         " maths_audit, numerics_audit, reviewer, repo, "
         " pages_url, github_url, review_pdf_url, paper_pdf_url, "
-        " paper_pages_url, px_id, total_cost, is_current, content_hash) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+        " paper_pages_url, px_id, total_cost, "
+        " score_overall, score_soundness, score_novelty, score_significance, "
+        " score_clarity, score_evidence, score_justification, "
+        " is_current, content_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
         (
             review_id, new_version,
             meta["paper_title"], meta["paper_author"], meta["review_date"],
@@ -414,6 +438,13 @@ def upsert_review(
             meta.get("paper_pages_url", ""),
             px_id,
             meta.get("total_cost"),
+            scores.get("overall"),
+            scores.get("soundness"),
+            scores.get("novelty"),
+            scores.get("significance"),
+            scores.get("clarity"),
+            scores.get("evidence_quality"),
+            scores.get("justification", ""),
             content_hash,
         ),
     )

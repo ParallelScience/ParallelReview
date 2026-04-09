@@ -46,6 +46,32 @@
         <span>{{ review.date_short }}</span>
       </div>
 
+      {# Scores (OpenReview-style) #}
+      {% if review.score_overall %}
+      <div class="review-scores">
+        <div class="score-overall">
+          <span class="score-label">Overall:</span>
+          <span class="score-value score-{{ 'high' if review.score_overall >= 7 else ('mid' if review.score_overall >= 4 else 'low') }}">{{ review.score_overall }}<span class="score-max">/10</span></span>
+        </div>
+        <div class="score-dimensions">
+          {% for key, label in [('score_soundness', 'Soundness'), ('score_novelty', 'Novelty'), ('score_significance', 'Significance'), ('score_clarity', 'Clarity'), ('score_evidence', 'Evidence Quality')] %}
+          {% if review[key] %}
+          <div class="score-dim">
+            <span class="score-dim-label">{{ label }}</span>
+            <div class="score-bar-track">
+              <div class="score-bar-fill score-bar-{{ 'high' if review[key] >= 7 else ('mid' if review[key] >= 4 else 'low') }}" style="width:{{ review[key] * 10 }}%"></div>
+            </div>
+            <span class="score-dim-value">{{ review[key] }}</span>
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+        {% if review.score_justification %}
+        <div class="score-justification">{{ review.score_justification }}</div>
+        {% endif %}
+      </div>
+      {% endif %}
+
       {# Summary #}
       {% if review.summary %}
       <ul class="note-content">
