@@ -373,41 +373,28 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
     review_md = fetch_review_md(org, repo)
     sections = parse_review_md(review_md)
 
-    # If the HTML title is a repo slug or author is unknown, scrape the paper's
-    # own Pages site — it's the authoritative source for title and author.
-    needs_title = _looks_like_repo_slug(meta["paper_title"])
-    needs_author = meta.get("paper_author", "").lower() in ("unknown", "")
+    # Always use the title from review.md — it's the sanitized source of truth
+    if review_md:
+        md_title = _extract_title_from_review_md(review_md)
+        if md_title:
+            meta["paper_title"] = md_title
 
-    if needs_title or needs_author:
+    # If the author is unknown/empty, try scraping the paper's own Pages site
+    if meta.get("paper_author", "").lower() in ("unknown", ""):
         paper_url = meta.get("paper_pages_url", "")
         if paper_url:
             try:
                 import urllib.request
                 with urllib.request.urlopen(paper_url, timeout=10) as resp:
                     paper_html = resp.read().decode("utf-8", errors="replace")
-                if needs_title:
-                    m = re.search(r'<h1[^>]*>(.+?)</h1>', paper_html, re.DOTALL)
-                    if m:
-                        paper_title = re.sub(r'<[^>]+>', '', m.group(1)).strip()
-                        if paper_title:
-                            meta["paper_title"] = paper_title
-                            log.info("Title from paper page for %s: %s", repo, paper_title[:80])
-                if needs_author:
-                    m = re.search(r'Author:\s*</span>\s*(.+?)<', paper_html)
-                    if not m:
-                        m = re.search(r'Author:\s*([^<]+)', paper_html)
-                    if m:
-                        meta["paper_author"] = m.group(1).strip()
-                        log.info("Author from paper page for %s: %s", repo, meta["paper_author"])
+                m = re.search(r'Author:\s*</span>\s*(.+?)<', paper_html)
+                if not m:
+                    m = re.search(r'Author:\s*([^<]+)', paper_html)
+                if m:
+                    meta["paper_author"] = m.group(1).strip()
+                    log.info("Author from paper page for %s: %s", repo, meta["paper_author"])
             except Exception:
                 pass
-
-    # If paper page didn't have the title, fall back to review.md
-    if _looks_like_repo_slug(meta["paper_title"]) and review_md:
-        md_title = _extract_title_from_review_md(review_md)
-        if md_title:
-            log.info("Title from review.md for %s: %s", repo, md_title[:80])
-            meta["paper_title"] = md_title
 
     # Fetch cost.json if available
     total_cost = _fetch_cost_json(org, repo)
