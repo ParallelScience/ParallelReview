@@ -408,9 +408,6 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
     if scores is not None:
         meta["scores"] = scores
 
-    # Clean LaTeX math from title for display (convert to Unicode)
-    meta["paper_title"] = _clean_title_math(meta.get("paper_title", ""))
-
     meta["repo"] = repo
     meta["pages_url"] = f"https://{org.lower()}.github.io/{repo}/"
     meta["github_url"] = f"https://github.com/{org}/{repo}"
