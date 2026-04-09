@@ -3,7 +3,7 @@
 {% block title %}[{{ review.review_id }}] Review: {{ review.paper_title }}{% endblock %}
 
 {% block banner %}
-<a href="{{ url_for('review_browse.home') }}">Parallel Review</a> &gt;
+<a href="{{ url_for('review_browse.home') }}">ParallelOpenReview</a> &gt;
 <a href="{{ url_for('review_browse.forum', id=review.review_id) }}">{{ review.review_id }}</a>
 {% endblock %}
 

@@ -1,18 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <title>{% block title %}Parallel Review{% endblock %}</title>
+  <title>{% block title %}ParallelOpenReview{% endblock %}</title>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='70'>&#9998;</text></svg>">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
   {% block head %}{% endblock %}
 </head>
 <body>
 
   <nav class="navbar">
     <div class="navbar-inner">
-      <a class="navbar-brand" href="{{ url_for('review_browse.home') }}">PARALLEL<strong>REVIEW</strong></a>
+      <a class="navbar-brand" href="{{ url_for('review_browse.home') }}">Parallel<strong>OpenReview</strong></a>
       <div class="navbar-links">
         <a href="{{ url_for('review_browse.group', id='recent') }}">All Reviews</a>
         <a href="https://papers.parallelscience.org">Papers</a>
@@ -39,5 +40,17 @@
     &middot; Inspired by <a href="https://openreview.net">OpenReview</a>
   </footer>
 
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false},
+        {left: '\\\\(', right: '\\\\)', display: false},
+        {left: '\\\\[', right: '\\\\]', display: true}
+      ],
+      throwOnError: false
+    });">
+  </script>
 </body>
 </html>
