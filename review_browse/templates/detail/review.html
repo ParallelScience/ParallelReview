@@ -162,13 +162,8 @@
         <span class="invitation" style="background:var(--or-badge-meta);">Mathematics Audit</span>
         <span class="signatures">by {{ review.reviewer }}</span>
       </div>
-      <div class="note-content-container">
-        <ul class="note-content">
-          <li>
-            <span class="field-label">Audit Results: </span>
-            <span class="field-value">{{ review.maths_audit }}</span>
-          </li>
-        </ul>
+      <div class="audit-content">
+        {{ review.maths_audit|markdown }}
       </div>
     </div>
     {% endif %}
@@ -183,13 +178,8 @@
         <span class="invitation" style="background:var(--or-badge-decision);">Numerics Audit</span>
         <span class="signatures">by {{ review.reviewer }}</span>
       </div>
-      <div class="note-content-container">
-        <ul class="note-content">
-          <li>
-            <span class="field-label">Audit Results: </span>
-            <span class="field-value">{{ review.numerics_audit }}</span>
-          </li>
-        </ul>
+      <div class="audit-content">
+        {{ review.numerics_audit|markdown }}
       </div>
     </div>
     {% endif %}

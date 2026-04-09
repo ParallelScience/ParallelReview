@@ -92,4 +92,21 @@ def create_app(**kwargs) -> Flask:
 
     app.jinja_env.filters["parse_issues"] = parse_issues
 
+    # Markdown rendering filter for audit blocks
+    import markdown as _md
+    from markupsafe import Markup
+
+    def render_markdown(text: str) -> Markup:
+        """Render markdown text to HTML for display in templates."""
+        if not text:
+            return Markup("")
+        html = _md.markdown(
+            text,
+            extensions=["extra", "tables", "fenced_code", "sane_lists"],
+            output_format="html5",
+        )
+        return Markup(html)
+
+    app.jinja_env.filters["markdown"] = render_markdown
+
     return app

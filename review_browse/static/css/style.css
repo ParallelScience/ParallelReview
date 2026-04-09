@@ -32,7 +32,7 @@ html { font-size: 16px; }
 
 body {
   font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  font-size: 0.875rem;
+  font-size: 0.9375rem;
   line-height: 1.5;
   color: var(--or-dark);
   background: var(--or-bg);
@@ -307,8 +307,8 @@ h4 { color: var(--or-red); font-weight: 700; }
 
 .note-content li {
   margin-bottom: 0.5rem;
-  font-size: 0.75rem;
-  line-height: 1.125rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
 .note-content .field-label {
@@ -318,6 +318,60 @@ h4 { color: var(--or-red); font-weight: 700; }
 
 .note-content .field-value {
   white-space: pre-wrap;
+}
+
+/* ------------------------------------------------------------------ */
+/* Audit content blocks (maths, numerics, statements)                  */
+/* ------------------------------------------------------------------ */
+.audit-content {
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--or-dark);
+}
+.audit-content h3 {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--or-red);
+  margin: 1.2em 0 0.5em 0;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid var(--or-border);
+}
+.audit-content h4 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  margin: 0.8em 0 0.3em 0;
+}
+.audit-content ol, .audit-content ul {
+  margin: 0.3em 0 0.8em 1.2em;
+}
+.audit-content li {
+  margin-bottom: 0.5em;
+  line-height: 1.5;
+}
+.audit-content p {
+  margin: 0.3em 0 0.6em 0;
+}
+.audit-content strong {
+  color: var(--or-dark);
+}
+.audit-content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0 1em 0;
+  font-size: 0.8125rem;
+}
+.audit-content th, .audit-content td {
+  border: 1px solid var(--or-border);
+  padding: 0.35em 0.6em;
+  vertical-align: top;
+}
+.audit-content th {
+  background: var(--or-surface-alt);
+  font-weight: 700;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 /* ------------------------------------------------------------------ */
