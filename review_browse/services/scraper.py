@@ -191,6 +191,29 @@ def parse_page(html: str) -> dict | None:
     }
 
 
+def _looks_like_repo_slug(title: str) -> bool:
+    """Return True if title looks like a repo slug rather than a real title."""
+    # Repo slugs are all lowercase with hyphens and no spaces
+    return bool(re.match(r"^[a-z0-9][-a-z0-9]*$", title.strip()))
+
+
+def _extract_title_from_review_md(md_text: str) -> str:
+    """Extract the paper title from the first line of review.md.
+
+    The format is: # **_Skepthical_** review: *Paper Title Here*
+    """
+    for line in md_text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        # Match: # **_Skepthical_** review: *Title*
+        m = re.search(r"review:\s*\*(.+?)\*\s*$", line)
+        if m:
+            return m.group(1).strip()
+        break
+    return ""
+
+
 def scrape_single_repo(org: str, repo: str) -> dict | None:
     """Fetch and parse a single review repo. Returns metadata dict or None."""
     html = fetch_page(org, repo)
@@ -203,6 +226,14 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
     # Fetch and parse the review markdown
     review_md = fetch_review_md(org, repo)
     sections = parse_review_md(review_md)
+
+    # If the HTML title is just a repo slug, try to extract the real title
+    # from review.md (first line: # **_Skepthical_** review: *Real Title*)
+    if _looks_like_repo_slug(meta["paper_title"]) and review_md:
+        md_title = _extract_title_from_review_md(review_md)
+        if md_title:
+            log.info("Title from review.md for %s: %s", repo, md_title[:80])
+            meta["paper_title"] = md_title
 
     meta["repo"] = repo
     meta["pages_url"] = f"https://{org.lower()}.github.io/{repo}/"
@@ -360,8 +391,25 @@ def upsert_review(
 # Bulk scrape
 # ---------------------------------------------------------------------------
 
+def _is_duplicate_review_repo(name: str, all_repos: set[str]) -> bool:
+    """Detect timestamp-suffixed duplicate review repos.
+
+    E.g., review-act-dr6-crossfreq-coherence-202604081116 is a duplicate
+    if review-act-dr6-crossfreq-coherence also exists.
+    """
+    m = re.match(r"^(review-.+)-(\d{12})$", name)
+    if m:
+        base = m.group(1)
+        return base in all_repos
+    return False
+
+
 def list_review_repos(org: str) -> list[str]:
-    """List review repos (prefixed with 'review-') in the org."""
+    """List review repos (prefixed with 'review-') in the org.
+
+    Filters out timestamp-suffixed duplicate repos when the canonical
+    review repo (without timestamp) also exists.
+    """
     import urllib.request
     repos: list[str] = []
     page = 1
@@ -377,7 +425,13 @@ def list_review_repos(org: str) -> list[str]:
             break
         repos.extend(r["name"] for r in data if r["name"].startswith("review-"))
         page += 1
-    return repos
+
+    # Filter out timestamp-suffixed duplicates
+    repo_set = set(repos)
+    filtered = [r for r in repos if not _is_duplicate_review_repo(r, repo_set)]
+    if len(filtered) < len(repos):
+        log.info("Filtered %d duplicate timestamp-suffixed review repos", len(repos) - len(filtered))
+    return filtered
 
 
 def scrape_all_repos(

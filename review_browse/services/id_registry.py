@@ -24,16 +24,30 @@ _ARXIV_DB = os.environ.get(
 
 
 def _lookup_px_id_from_db(paper_repo: str) -> str | None:
-    """Look up a paper's PX ID from the local arxiv-browse database."""
+    """Look up a paper's PX ID from the local arxiv-browse database.
+
+    Tries exact match first, then prefix match for truncated repo names
+    (GitHub truncates long repo names, so review-{paper_repo} may be shorter
+    than the actual paper repo name).
+    """
     if not os.path.exists(_ARXIV_DB):
         return None
     try:
         conn = sqlite3.connect(_ARXIV_DB)
         conn.row_factory = sqlite3.Row
+        # Exact match
         row = conn.execute(
             "SELECT px_id FROM papers WHERE repo = ? AND is_current = 1",
             (paper_repo,),
         ).fetchone()
+        if not row and len(paper_repo) > 20:
+            # Prefix match for truncated names
+            row = conn.execute(
+                "SELECT px_id FROM papers WHERE repo LIKE ? AND is_current = 1",
+                (paper_repo + "%",),
+            ).fetchone()
+            if row:
+                log.info("PX ID found via prefix match: %s -> %s", paper_repo, row["px_id"])
         conn.close()
         return row["px_id"] if row else None
     except Exception as e:
