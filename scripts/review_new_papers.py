@@ -91,10 +91,24 @@ def _scrape_papers_from_github() -> list[dict]:
             # Quick check it's a paper page (has abstract)
             if "abstract" not in html.lower():
                 continue
+            # Extract real title from <h1> or <title>
+            title = repo
+            m = re.search(r'<h1[^>]*>(.+?)</h1>', html, re.DOTALL)
+            if m:
+                title = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            elif (m := re.search(r'<title>([^<]+)</title>', html)):
+                title = m.group(1).strip()
+            # Extract author
+            author = "unknown"
+            m = re.search(r'Author:\s*</span>\s*(.+?)<', html)
+            if not m:
+                m = re.search(r'Author:\s*([^<]+)', html)
+            if m:
+                author = m.group(1).strip()
             papers.append({
                 "px_id": repo,
-                "title": repo,
-                "author": "unknown",
+                "title": title,
+                "author": author,
                 "repo": repo,
                 "pages_url": url,
                 "pdf_url": f"{url}paper.pdf",

@@ -228,6 +228,11 @@ def _run_review_background(org_name: str, repo_name: str):
             m = re.search(r'<h1[^>]*>(.+?)</h1>', html, re.DOTALL)
             if m:
                 title = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            if title == repo_name:
+                # <h1> failed or returned repo name, try <title>
+                m = re.search(r'<title>([^<]+)</title>', html)
+                if m and m.group(1).strip() != repo_name:
+                    title = m.group(1).strip()
             m = re.search(r'Author:\s*</span>\s*(.+?)<', html)
             if not m:
                 m = re.search(r'Author:\s*([^<]+)', html)
