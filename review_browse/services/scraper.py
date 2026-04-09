@@ -235,6 +235,23 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
             log.info("Title from review.md for %s: %s", repo, md_title[:80])
             meta["paper_title"] = md_title
 
+    # If the author is unknown/empty, try scraping the paper's own Pages site
+    if meta.get("paper_author", "").lower() in ("unknown", ""):
+        paper_url = meta.get("paper_pages_url", "")
+        if paper_url:
+            try:
+                import urllib.request
+                with urllib.request.urlopen(paper_url, timeout=10) as resp:
+                    paper_html = resp.read().decode("utf-8", errors="replace")
+                m = re.search(r'Author:\s*</span>\s*(.+?)<', paper_html)
+                if not m:
+                    m = re.search(r'Author:\s*([^<]+)', paper_html)
+                if m:
+                    meta["paper_author"] = m.group(1).strip()
+                    log.info("Author from paper page for %s: %s", repo, meta["paper_author"])
+            except Exception:
+                pass
+
     meta["repo"] = repo
     meta["pages_url"] = f"https://{org.lower()}.github.io/{repo}/"
     meta["github_url"] = f"https://github.com/{org}/{repo}"
