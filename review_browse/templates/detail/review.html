@@ -26,6 +26,7 @@
       </div>
 
       <div class="forum-meta">
+        <span class="item" style="font-weight:600;color:var(--or-red);">{{ review.review_id }}</span>
         <span class="item">&#128197; {{ review.date_short }}</span>
         <span class="item">&#128269; Reviewed by {{ review.reviewer }}</span>
         {% if review.paper_pages_url %}
@@ -205,25 +206,6 @@
 
   </div>
 
-  {# ---- Sidebar ---- #}
-  <div class="extra-services">
-    <h3>Access Review</h3>
-    <ul>
-      <li><a href="{{ url_for('review_browse.pdf', id=review.review_id) }}">Review PDF</a></li>
-      <li><a href="{{ review.pages_url }}">Review Page</a></li>
-      <li><a href="{{ review.github_url }}">GitHub</a></li>
-    </ul>
-    {% if review.paper_pages_url %}
-    <h3>Paper</h3>
-    <ul>
-      <li><a href="{{ review.paper_pages_url }}">View Paper</a></li>
-    </ul>
-    {% endif %}
-    <h3>Citation</h3>
-    <ul>
-      <li>{{ review.review_id }}</li>
-    </ul>
-  </div>
 </div>
 
 {%- endblock %}
