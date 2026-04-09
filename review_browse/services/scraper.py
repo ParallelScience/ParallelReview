@@ -191,6 +191,80 @@ def parse_page(html: str) -> dict | None:
     }
 
 
+_SANITIZE_CACHE: dict[str, str] = {}
+
+
+def _sanitize_review_math(md_text: str) -> str:
+    """Sanitize math notation in review markdown using a cheap LLM.
+
+    Caches results by content hash to avoid repeated API calls on rescrape.
+    Returns original text if API key is unavailable or call fails.
+    """
+    if not md_text or len(md_text) < 100:
+        return md_text
+
+    content_hash = hashlib.sha256(md_text.encode()).hexdigest()[:16]
+    if content_hash in _SANITIZE_CACHE:
+        return _SANITIZE_CACHE[content_hash]
+
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return md_text
+
+    try:
+        from openai import OpenAI
+
+        prompt = (
+            "You are a LaTeX math formatter for a scientific peer review document.\n"
+            "\n"
+            "Your ONLY job: wrap all mathematical expressions in $...$ (inline) or $$...$$ (display) "
+            "delimiters with proper LaTeX commands, so KaTeX can render them.\n"
+            "\n"
+            "Rules:\n"
+            "1. Convert Greek Unicode to LaTeX: σ→$\\sigma$, α→$\\alpha$, etc.\n"
+            "2. Convert subscripts/superscripts: x_i→$x_i$, σ_norm→$\\sigma_{\\rm norm}$\n"
+            "3. Convert operators: ≈→$\\approx$, ≤→$\\leq$, ≥→$\\geq$, ±→$\\pm$, ×→$\\times$, ∼→$\\sim$\n"
+            "4. Do NOT wrap: section references, figure references, plain text, issue IDs, URLs, code blocks.\n"
+            "5. Do NOT change any wording, structure, or content.\n"
+            "6. If text is already in $...$ or $$...$$, leave it.\n"
+            "7. Return the COMPLETE document.\n"
+            "8. Preserve ALL markdown formatting.\n"
+        )
+
+        client = OpenAI(api_key=api_key)
+        resp = client.responses.create(
+            model="gpt-4.1",
+            input=[{"role": "user", "content": [
+                {"type": "input_text", "text": prompt + "\n\n=== DOCUMENT ===\n" + md_text},
+            ]}],
+            timeout=120,
+        )
+
+        result = getattr(resp, "output_text", None)
+        if not result:
+            out = getattr(resp, "output", None)
+            if isinstance(out, list):
+                for item in out:
+                    c = getattr(item, "content", None)
+                    if isinstance(c, list):
+                        for part in c:
+                            t = getattr(part, "text", None)
+                            if isinstance(t, str) and t.strip():
+                                result = t.strip()
+                                break
+                    if result:
+                        break
+
+        if result and len(result) >= len(md_text) * 0.5:
+            _SANITIZE_CACHE[content_hash] = result
+            log.info("Math sanitized for scraper (%d → %d chars)", len(md_text), len(result))
+            return result
+    except Exception as e:
+        log.warning("Math sanitization failed in scraper: %s", e)
+
+    return md_text
+
+
 def _fetch_cost_json(org: str, repo: str) -> float | None:
     """Fetch cost.json from the review repo's Pages site."""
     import urllib.request
@@ -252,6 +326,10 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
 
     # Fetch and parse the review markdown
     review_md = fetch_review_md(org, repo)
+
+    # Sanitize math notation for proper rendering
+    review_md = _sanitize_review_math(review_md)
+
     sections = parse_review_md(review_md)
 
     # If the HTML title is just a repo slug, try to extract the real title
