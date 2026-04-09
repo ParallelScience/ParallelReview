@@ -379,6 +379,32 @@ def upsert_review(
     ).fetchone()
 
     if existing and existing["content_hash"] == content_hash:
+        # Even if content is unchanged, update scores if they're newly available
+        new_scores = meta.get("scores") or {}
+        if new_scores.get("overall") is not None:
+            current_score = conn.execute(
+                "SELECT score_overall FROM reviews WHERE review_id = ? AND is_current = 1",
+                (review_id,),
+            ).fetchone()
+            if current_score and current_score["score_overall"] is None:
+                conn.execute(
+                    "UPDATE reviews SET score_overall=?, score_soundness=?, score_novelty=?, "
+                    "score_significance=?, score_clarity=?, score_evidence=?, score_justification=? "
+                    "WHERE review_id=? AND is_current=1",
+                    (
+                        new_scores.get("overall"),
+                        new_scores.get("soundness"),
+                        new_scores.get("novelty"),
+                        new_scores.get("significance"),
+                        new_scores.get("clarity"),
+                        new_scores.get("evidence_quality"),
+                        new_scores.get("justification", ""),
+                        review_id,
+                    ),
+                )
+                conn.commit()
+                log.info("SCORES %s (overall=%s)", review_id, new_scores.get("overall"))
+                return review_id, existing["version"], "scores_updated"
         return review_id, existing["version"], "unchanged"
 
     if existing:
