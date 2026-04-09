@@ -184,8 +184,10 @@
     </div>
     {% endif %}
 
-    {# ---- Submission History ---- #}
+    {# ---- Submission History (only show if versions have different review dates) ---- #}
     {% if review.versions and review.versions|length > 1 %}
+    {% set unique_dates = review.versions|map(attribute='review_date')|list|unique|list %}
+    {% if unique_dates|length > 1 %}
     <div class="submission-history">
       <h3>Submission history</h3>
       {% for v in review.versions %}
@@ -198,6 +200,7 @@
       {% if not loop.last %}<br>{% endif %}
       {% endfor %}
     </div>
+    {% endif %}
     {% endif %}
 
   </div>
