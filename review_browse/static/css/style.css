@@ -487,7 +487,8 @@ h4 { color: var(--or-red); font-weight: 700; }
   padding: 0.5rem 0.75rem;
   margin-bottom: 0.25rem;
   border-left: 3px solid transparent;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
 .issue-major { border-left-color: #c0392b; background: #f8d7da; }
@@ -496,7 +497,7 @@ h4 { color: var(--or-red); font-weight: 700; }
 
 .issue-item .issue-title { font-weight: 400; }
 .issue-item .issue-rec {
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   color: var(--or-dark);
   margin-top: 0.5rem;
 }
@@ -603,7 +604,8 @@ h4 { color: var(--or-red); font-weight: 700; }
   margin-bottom: 0.25rem;
   border-left: 3px solid #27ae60;
   background: #d4edda;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
 }
 
 /* ------------------------------------------------------------------ */
