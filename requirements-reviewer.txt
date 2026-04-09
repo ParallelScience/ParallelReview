@@ -16,3 +16,4 @@ markdown
 playwright
 reportlab
 google-cloud-storage==2.16.0
+pyphen>=0.16
