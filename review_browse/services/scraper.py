@@ -298,6 +298,51 @@ def _looks_like_repo_slug(title: str) -> bool:
     return bool(re.match(r"^[a-z0-9][-a-z0-9]*$", title.strip()))
 
 
+def _clean_title_math(title: str) -> str:
+    """Convert LaTeX math in titles to Unicode for clean display.
+
+    Titles appear in <h4>, <title>, etc. where KaTeX may not render.
+    Convert common LaTeX commands to their Unicode equivalents.
+    """
+    if not title or "$" not in title:
+        return title
+
+    # Common LaTeX → Unicode mappings for titles
+    latex_to_unicode = {
+        r"\times": "×", r"\cdot": "·", r"\pm": "±", r"\mp": "∓",
+        r"\approx": "≈", r"\sim": "∼", r"\simeq": "≃", r"\neq": "≠",
+        r"\leq": "≤", r"\geq": "≥", r"\ll": "≪", r"\gg": "≫",
+        r"\infty": "∞", r"\propto": "∝", r"\partial": "∂", r"\nabla": "∇",
+        r"\alpha": "α", r"\beta": "β", r"\gamma": "γ", r"\delta": "δ",
+        r"\epsilon": "ε", r"\zeta": "ζ", r"\eta": "η", r"\theta": "θ",
+        r"\iota": "ι", r"\kappa": "κ", r"\lambda": "λ", r"\mu": "μ",
+        r"\nu": "ν", r"\xi": "ξ", r"\pi": "π", r"\rho": "ρ",
+        r"\sigma": "σ", r"\tau": "τ", r"\upsilon": "υ", r"\phi": "φ",
+        r"\chi": "χ", r"\psi": "ψ", r"\omega": "ω",
+        r"\Gamma": "Γ", r"\Delta": "Δ", r"\Theta": "Θ", r"\Lambda": "Λ",
+        r"\Sigma": "Σ", r"\Omega": "Ω",
+        r"\ell": "ℓ", r"-times": "×",  # common sanitizer glitch
+    }
+
+    def _replace_math(m: re.Match) -> str:
+        content = m.group(1)
+        for latex, uni in latex_to_unicode.items():
+            content = content.replace(latex, uni)
+        # Strip remaining LaTeX commands and braces
+        content = re.sub(r"\\(?:rm|text|mathrm|mathbf|textbf|mathit)\{([^}]+)\}", r"\1", content)
+        content = re.sub(r"\\(?:rm|text|mathrm|mathbf)\s+", "", content)  # \rm without braces
+        content = content.replace("{", "").replace("}", "")
+        content = content.replace("\\,", " ").replace("\\;", " ").replace("\\!", "")
+        content = content.strip()
+        return content
+
+    # Replace $...$ with cleaned content
+    result = re.sub(r"\$([^$]+)\$", _replace_math, title)
+    # Clean up any double spaces
+    result = re.sub(r"  +", " ", result).strip()
+    return result
+
+
 def _extract_title_from_review_md(md_text: str) -> str:
     """Extract the paper title from the first line of review.md.
 
@@ -362,6 +407,9 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
     scores = _fetch_scores_json(org, repo)
     if scores is not None:
         meta["scores"] = scores
+
+    # Clean LaTeX math from title for display (convert to Unicode)
+    meta["paper_title"] = _clean_title_math(meta.get("paper_title", ""))
 
     meta["repo"] = repo
     meta["pages_url"] = f"https://{org.lower()}.github.io/{repo}/"
