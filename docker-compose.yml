@@ -1,0 +1,17 @@
+services:
+  parallel-review:
+    build:
+      context: .
+      dockerfile: Dockerfile.reviewer
+    container_name: parallel-review
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    cpus: 2
+    mem_limit: 5g
+    env_file: .env
+    volumes:
+      - review-data:/app/review_browse/data
+
+volumes:
+  review-data:

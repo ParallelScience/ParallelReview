@@ -1,0 +1,18 @@
+# ParallelReview Flask app
+flask>=3.0,<4
+gunicorn>=23.0,<24
+
+# Skepthical dependencies (from skepthical-backend/requirements.txt)
+pyyaml
+mistralai==1.9.11
+openai==1.99.9
+pandas==2.3.3
+pydantic==2.12.5
+pypandoc==1.16.2
+requests==2.32.5
+cmbagent-autogen==0.0.91post11
+IPython==8.12.3
+markdown
+playwright
+reportlab
+google-cloud-storage==2.16.0

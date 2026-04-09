@@ -1,10 +1,10 @@
 {%- extends "base.html" -%}
 
-{% block title %}[RX:{{ review.rx_id }}] Review: {{ review.paper_title }}{% endblock %}
+{% block title %}[{{ review.review_id }}] Review: {{ review.paper_title }}{% endblock %}
 
 {% block banner %}
 <a href="{{ url_for('review_browse.home') }}">Parallel Review</a> &gt;
-<a href="{{ url_for('review_browse.forum', id=review.rx_id) }}">RX:{{ review.rx_id }}</a>
+<a href="{{ url_for('review_browse.forum', id=review.review_id) }}">{{ review.review_id }}</a>
 {% endblock %}
 
 {%- block content %}
@@ -17,7 +17,7 @@
       <div class="forum-title">
         <h2>{{ review.paper_title }}</h2>
         <div class="pdf-link">
-          <a href="{{ url_for('review_browse.pdf', id=review.rx_id) }}">Review PDF</a>
+          <a href="{{ url_for('review_browse.pdf', id=review.review_id) }}">Review PDF</a>
         </div>
       </div>
 
@@ -183,7 +183,7 @@
       {% if v.version == review.version %}
       <strong>[v{{ v.version }}]</strong>
       {% else %}
-      <a href="{{ url_for('review_browse.forum', id=review.rx_id, v=v.version) }}">[v{{ v.version }}]</a>
+      <a href="{{ url_for('review_browse.forum', id=review.review_id, v=v.version) }}">[v{{ v.version }}]</a>
       {% endif %}
       {{ v.review_date }}
       {% if not loop.last %}<br>{% endif %}
@@ -197,7 +197,7 @@
   <div class="extra-services">
     <h3>Access Review</h3>
     <ul>
-      <li><a href="{{ url_for('review_browse.pdf', id=review.rx_id) }}">Review PDF</a></li>
+      <li><a href="{{ url_for('review_browse.pdf', id=review.review_id) }}">Review PDF</a></li>
       <li><a href="{{ review.pages_url }}">Review Page</a></li>
       <li><a href="{{ review.github_url }}">GitHub</a></li>
     </ul>
@@ -209,7 +209,7 @@
     {% endif %}
     <h3>Citation</h3>
     <ul>
-      <li>RX:{{ review.rx_id }}</li>
+      <li>{{ review.review_id }}</li>
     </ul>
   </div>
 </div>

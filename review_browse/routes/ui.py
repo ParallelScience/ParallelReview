@@ -1,12 +1,13 @@
 """Routes for Parallel Review.
 
 URL patterns mirror OpenReview conventions:
-  /                          — Home page
-  /forum?id=<rx_id>          — Review detail (forum view, like OpenReview)
-  /forum?id=<rx_id>&v=<N>    — Specific version
-  /notes?content.author=<a>  — Reviews by paper author
-  /pdf?id=<rx_id>            — Review PDF
-  /group?id=recent           — Recent reviews listing
+  /                              — Home page
+  /forum?id=<review_id>          — Review detail (forum view)
+  /forum?id=<review_id>&v=<N>    — Specific version
+  /notes?content.author=<a>      — Reviews by paper author
+  /notes?content.px_id=<px_id>   — Reviews for a specific paper
+  /pdf?id=<review_id>            — Review PDF
+  /group?id=recent               — Recent reviews listing
 """
 
 from datetime import datetime
@@ -41,39 +42,46 @@ def home() -> Response:
 
 @blueprint.route("forum", methods=["GET"])
 def forum() -> Response:
-    """Review detail page. Query params: id (RX ID), v (version, optional)."""
+    """Review detail page. Query params: id (review ID), v (version, optional)."""
     from review_browse.services.reviews import get_review_by_id, get_review_versions, count_issues
 
-    rx_id = request.args.get("id", "")
+    review_id = request.args.get("id", "")
     version = request.args.get("v", None, type=int)
 
-    if not rx_id:
+    if not review_id:
         return redirect(url_for("review_browse.home"))
 
-    review = get_review_by_id(rx_id, version=version)
+    review = get_review_by_id(review_id, version=version)
     if review is None:
-        return render_template("detail/not_found.html", rx_id=rx_id), status.NOT_FOUND, {}
+        return render_template("detail/not_found.html", review_id=review_id), status.NOT_FOUND, {}
 
     review["issues"] = count_issues(review)
     review["date_formatted"] = _format_date_long(review.get("review_date", ""))
     review["date_short"] = _format_date_short(review.get("review_date", ""))
-    review["versions"] = get_review_versions(rx_id)
+    review["versions"] = get_review_versions(review_id)
     return render_template("detail/review.html", review=review), status.OK, {}
 
 
 # ---------------------------------------------------------------------------
-# Notes — listing by author (matches OpenReview /notes?content.author=...)
+# Notes — listing by author or paper
 # ---------------------------------------------------------------------------
 
 @blueprint.route("notes", methods=["GET"])
 def notes() -> Response:
-    """List reviews. Supports: content.author=<name>"""
-    from review_browse.services.reviews import get_all_current_reviews, get_reviews_by_author, count_issues
+    """List reviews. Supports: content.author=<name>, content.px_id=<px_id>"""
+    from review_browse.services.reviews import (
+        get_all_current_reviews, get_reviews_by_author, get_reviews_by_paper, count_issues,
+    )
 
     author = request.args.get("content.author", "")
+    px_id = request.args.get("content.px_id", "")
+
     if author:
         reviews = get_reviews_by_author(author)
         context = f"Reviews for papers by {author}"
+    elif px_id:
+        reviews = get_reviews_by_paper(px_id)
+        context = f"Reviews for paper PX:{px_id}"
     else:
         reviews = get_all_current_reviews()
         context = "All Reviews"
@@ -94,10 +102,8 @@ def notes() -> Response:
 
 @blueprint.route("group", methods=["GET"])
 def group() -> Response:
-    """Group listing. Supports: id=recent"""
     from review_browse.services.reviews import get_all_current_reviews, count_issues
 
-    group_id = request.args.get("id", "recent")
     reviews = get_all_current_reviews()
     for r in reviews:
         r["issues"] = count_issues(r)
@@ -115,21 +121,20 @@ def group() -> Response:
 
 @blueprint.route("pdf", methods=["GET"])
 def pdf() -> Response:
-    """Serve review PDF. Query params: id (RX ID), v (version, optional)."""
-    rx_id = request.args.get("id", "")
+    review_id = request.args.get("id", "")
     version = request.args.get("v", None, type=int)
-    if not rx_id:
+    if not review_id:
         return "Missing id parameter", status.BAD_REQUEST, {}
-    return _serve_pdf(rx_id, version=version)
+    return _serve_pdf(review_id, version=version)
 
 
 # ---------------------------------------------------------------------------
 # Legacy / convenience aliases
 # ---------------------------------------------------------------------------
 
-@blueprint.route("review/<rx_id>")
-def review_redirect(rx_id: str) -> Response:
-    return redirect(url_for("review_browse.forum", id=rx_id))
+@blueprint.route("review/<path:review_id>")
+def review_redirect(review_id: str) -> Response:
+    return redirect(url_for("review_browse.forum", id=review_id))
 
 
 @blueprint.route("author/<author>")
@@ -141,10 +146,10 @@ def author_redirect(author: str) -> Response:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _serve_pdf(rx_id: str, version: int | None) -> Response:
+def _serve_pdf(review_id: str, version: int | None) -> Response:
     import urllib.request
     from review_browse.services.reviews import get_review_by_id
-    review = get_review_by_id(rx_id, version=version)
+    review = get_review_by_id(review_id, version=version)
     if review is None:
         return "Review not found", status.NOT_FOUND, {}
     url = review.get("review_pdf_url", "")
@@ -156,8 +161,9 @@ def _serve_pdf(rx_id: str, version: int | None) -> Response:
     except Exception:
         return "PDF not available", status.NOT_FOUND, {}
     v = review.get("version", 1)
+    safe_id = review_id.replace(":", "_")
     return Response(pdf_data, mimetype="application/pdf",
-                    headers={"Content-Disposition": f"inline; filename=review_{rx_id}v{v}.pdf"})
+                    headers={"Content-Disposition": f"inline; filename=review_{safe_id}v{v}.pdf"})
 
 
 def _format_date_short(date_str: str) -> str:

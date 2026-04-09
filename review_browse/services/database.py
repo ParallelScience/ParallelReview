@@ -18,23 +18,18 @@ _DB_PATH: str = ""
 _GCS_DB_URI: str = ""
 
 SCHEMA_SQL = """
--- Persistent ID registry: append-only, one row per repo, never deleted
+-- Review ID registry: maps review repo → review_id (PX:YYMM.NNNNN-RN)
 CREATE TABLE IF NOT EXISTS id_registry (
-    repo        TEXT PRIMARY KEY,
-    rx_id       TEXT NOT NULL UNIQUE,
-    yymm        TEXT NOT NULL,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
-
--- Next sequence number per month
-CREATE TABLE IF NOT EXISTS id_sequence (
-    yymm    TEXT PRIMARY KEY,
-    next_n  INTEGER NOT NULL DEFAULT 1
+    repo         TEXT PRIMARY KEY,
+    review_id    TEXT NOT NULL UNIQUE,
+    px_id        TEXT NOT NULL DEFAULT '',
+    paper_repo   TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 -- Reviews table with version tracking
 CREATE TABLE IF NOT EXISTS reviews (
-    rx_id               TEXT NOT NULL,
+    review_id           TEXT NOT NULL,
     version             INTEGER NOT NULL DEFAULT 1,
     paper_title         TEXT NOT NULL,
     paper_author        TEXT NOT NULL,
@@ -53,16 +48,18 @@ CREATE TABLE IF NOT EXISTS reviews (
     review_pdf_url      TEXT NOT NULL DEFAULT '',
     paper_pdf_url       TEXT NOT NULL DEFAULT '',
     paper_pages_url     TEXT NOT NULL DEFAULT '',
+    px_id               TEXT NOT NULL DEFAULT '',
     is_current          INTEGER NOT NULL DEFAULT 1,
     scraped_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     content_hash        TEXT,
-    PRIMARY KEY (rx_id, version),
+    PRIMARY KEY (review_id, version),
     FOREIGN KEY (repo) REFERENCES id_registry(repo)
 );
 
 CREATE INDEX IF NOT EXISTS idx_reviews_current ON reviews(is_current) WHERE is_current = 1;
 CREATE INDEX IF NOT EXISTS idx_reviews_author ON reviews(paper_author) WHERE is_current = 1;
 CREATE INDEX IF NOT EXISTS idx_reviews_repo ON reviews(repo);
+CREATE INDEX IF NOT EXISTS idx_reviews_px_id ON reviews(px_id) WHERE is_current = 1;
 """
 
 
@@ -111,15 +108,21 @@ def _gcs_public_url() -> str:
 
 
 def _download_from_gcs() -> bool:
+    """Download from GCS to _DB_PATH."""
+    return _download_from_gcs_to(_DB_PATH)
+
+
+def _download_from_gcs_to(dest: str) -> bool:
+    """Download the DB from GCS to a specific path via public URL."""
     if not _GCS_DB_URI:
         return False
     try:
         import urllib.request
         url = _gcs_public_url()
-        print(f"[RX] Downloading DB from {url}", flush=True)
-        urllib.request.urlretrieve(url, _DB_PATH)
-        size = os.path.getsize(_DB_PATH)
-        c = sqlite3.connect(_DB_PATH)
+        print(f"[RX] Downloading DB from {url} -> {dest}", flush=True)
+        urllib.request.urlretrieve(url, dest)
+        size = os.path.getsize(dest)
+        c = sqlite3.connect(dest)
         count = c.execute("SELECT count(*) FROM reviews").fetchone()[0]
         c.close()
         print(f"[RX] Downloaded DB: {size} bytes, {count} reviews", flush=True)
@@ -131,6 +134,7 @@ def _download_from_gcs() -> bool:
 
 def sync_to_gcs() -> bool:
     if not _GCS_DB_URI:
+        log.warning("[RX] sync_to_gcs called but GCS_DB_URI is not set — reviews will NOT persist across deploys!")
         return False
     conn = _connect()
     try:
@@ -144,10 +148,11 @@ def sync_to_gcs() -> bool:
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_path)
         blob.upload_from_filename(_DB_PATH)
-        print(f"[RX] Uploaded DB to gs://{bucket_name}/{blob_path}", flush=True)
+        size = os.path.getsize(_DB_PATH)
+        print(f"[RX] Uploaded DB ({size} bytes) to gs://{bucket_name}/{blob_path}", flush=True)
         return True
     except Exception as exc:
-        print(f"[RX] FAILED to upload DB to GCS: {exc}", flush=True)
+        log.error("[RX] FAILED to upload DB to GCS: %s", exc, exc_info=True)
         return False
 
 
@@ -156,6 +161,13 @@ def sync_to_gcs() -> bool:
 # ---------------------------------------------------------------------------
 
 def init_db(app: Flask) -> None:
+    """Initialize the database for the Flask app.
+
+    Resolution order for the DB file:
+    1. If RX_DATABASE_PATH is writable (local dev / Docker volume), use it directly
+    2. If GCS_DB_URI is set and path is read-only (Cloud Run), download to /tmp
+    3. Else copy baked-in DB to /tmp as last resort
+    """
     global _DB_PATH, _GCS_DB_URI
 
     _GCS_DB_URI = app.config.get("GCS_DB_URI", "") or os.environ.get("GCS_DB_URI", "")
@@ -163,21 +175,34 @@ def init_db(app: Flask) -> None:
         "RX_DATABASE_PATH",
         os.path.join(os.path.dirname(__file__), "..", "data", "reviews.db"),
     )
+    print(f"[RX] init_db: GCS_DB_URI={_GCS_DB_URI!r}, source={source_path}", flush=True)
 
-    if _GCS_DB_URI:
+    # Prefer the configured path if its parent directory is writable
+    # (local dev or Docker volume mount at /app/review_browse/data)
+    parent = os.path.dirname(source_path) or "."
+    if os.access(parent, os.W_OK):
+        _DB_PATH = source_path
+        print(f"[RX] Using writable path: {_DB_PATH}", flush=True)
+        # If the DB doesn't exist yet but GCS has one, seed from GCS
+        if not os.path.exists(_DB_PATH) and _GCS_DB_URI:
+            _download_from_gcs_to(_DB_PATH)
+    elif _GCS_DB_URI:
+        # Cloud Run: app dir is read-only, work in /tmp with GCS sync
         _DB_PATH = "/tmp/reviews.db"
         if not os.path.exists(_DB_PATH):
             if not _download_from_gcs():
                 if os.path.exists(source_path):
                     shutil.copy2(source_path, _DB_PATH)
-    else:
-        parent = os.path.dirname(source_path) or "."
-        if os.access(parent, os.W_OK):
-            _DB_PATH = source_path
+                    print(f"[RX] Seeded /tmp DB from baked-in {source_path}", flush=True)
+                else:
+                    print("[RX] No baked-in DB either, creating fresh", flush=True)
         else:
-            _DB_PATH = "/tmp/reviews.db"
-            if os.path.exists(source_path) and not os.path.exists(_DB_PATH):
-                shutil.copy2(source_path, _DB_PATH)
+            print(f"[RX] /tmp/reviews.db already exists ({os.path.getsize(_DB_PATH)} bytes), reusing", flush=True)
+    else:
+        # Fallback: read-only source, no GCS
+        _DB_PATH = "/tmp/reviews.db"
+        if os.path.exists(source_path) and not os.path.exists(_DB_PATH):
+            shutil.copy2(source_path, _DB_PATH)
 
     os.makedirs(os.path.dirname(_DB_PATH) or ".", exist_ok=True)
 
@@ -188,8 +213,16 @@ def init_db(app: Flask) -> None:
     finally:
         conn.close()
 
+    # Verify GCS sync capability at startup
+    if _GCS_DB_URI:
+        try:
+            from google.cloud import storage  # noqa: F401
+            print(f"[RX] GCS sync ENABLED: {_GCS_DB_URI}", flush=True)
+        except ImportError:
+            log.error("[RX] google-cloud-storage NOT installed — GCS sync DISABLED, reviews WILL be lost on redeploy!")
+
     app.teardown_appcontext(close_db)
-    log.info("Initialized reviews database at %s", _DB_PATH)
+    log.info("Initialized reviews database at %s (GCS: %s)", _DB_PATH, _GCS_DB_URI or "none")
 
 
 def init_standalone(db_path: str) -> None:

@@ -14,7 +14,7 @@ import sqlite3
 import sys
 from html.parser import HTMLParser
 
-from review_browse.services.id_registry import get_or_assign_id
+from review_browse.services.id_registry import get_or_assign_review_id
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +26,14 @@ GCS_BUCKET = "parallel-review"
 # ---------------------------------------------------------------------------
 
 class ReviewPageParser(HTMLParser):
-    """Extract paper title, author, date, review sections from a review page."""
+    """Extract paper title, author, date from a review GitHub Pages site.
+
+    The page template uses OpenReview-style classes:
+      <div class="forum-title"><h2>Title</h2></div>
+      <div class="forum-authors">Author</div>
+      <div class="forum-meta"><span>date</span><span>time</span>...</div>
+    And navbar links to the paper's Pages URL.
+    """
 
     def __init__(self):
         super().__init__()
@@ -40,53 +47,40 @@ class ReviewPageParser(HTMLParser):
         self.time = ""
         self.paper_pages_url = ""
 
-        # Collect all text content from reply-body sections
-        self._in_reply_body = False
-        self._reply_body_depth = 0
-        self.review_text_parts = []
-
     def handle_starttag(self, tag, attrs):
         attrs_dict = dict(attrs)
         cls = attrs_dict.get("class", "")
 
-        # Paper title in <span> inside .paper-title
-        if tag == "div" and "paper-title" in cls:
-            self._in_class = "paper-title"
-        elif tag == "span" and self._in_class == "paper-title":
+        # Title: <h2> inside .forum-title
+        if tag == "div" and "forum-title" in cls:
+            self._in_class = "forum-title"
+        elif tag == "h2" and self._in_class == "forum-title":
             self._in_tag = "title"
             self._current_text = []
 
-        # Author in .paper-authors
-        elif tag == "div" and "paper-authors" in cls:
+        # Author: .forum-authors div
+        elif tag == "div" and "forum-authors" in cls:
             self._in_tag = "authors"
             self._current_text = []
 
-        # Meta bar spans
-        elif tag == "div" and "meta-bar" in cls:
-            self._in_class = "meta-bar"
-        elif tag == "span" and self._in_class == "meta-bar":
+        # Meta bar: .forum-meta with <span> children
+        elif tag == "div" and "forum-meta" in cls:
+            self._in_class = "forum-meta"
+        elif tag == "span" and self._in_class == "forum-meta":
             self._in_tag = "meta-span"
             self._current_text = []
 
         # Paper link in navbar
-        elif tag == "a" and self._in_class is None:
+        elif tag == "a":
             href = attrs_dict.get("href", "")
             if "parallelscience.github.io" in href and "review" not in href:
                 self.paper_pages_url = href
 
-        # Reply body content
-        elif tag == "div" and "reply-body" in cls:
-            self._in_reply_body = True
-            self._reply_body_depth = 0
-
-        elif self._in_reply_body and tag == "div":
-            self._reply_body_depth += 1
-
     def handle_endtag(self, tag):
-        if tag == "span" and self._in_tag == "title":
+        if tag == "h2" and self._in_tag == "title":
             self.title = "".join(self._current_text).strip()
             self._in_tag = None
-        elif tag == "div" and self._in_class == "paper-title":
+        elif tag == "div" and self._in_class == "forum-title":
             self._in_class = None
 
         elif tag == "div" and self._in_tag == "authors":
@@ -95,30 +89,19 @@ class ReviewPageParser(HTMLParser):
 
         elif tag == "span" and self._in_tag == "meta-span":
             text = "".join(self._current_text).strip()
-            # Parse date/time from unicode-prefixed spans
             if re.search(r"\d{4}-\d{2}-\d{2}", text):
                 self.date = re.search(r"\d{4}-\d{2}-\d{2}", text).group()
-            elif "AOE" in text:
+            elif "AOE" in text or re.search(r"\d{2}:\d{2}:\d{2}", text):
                 m = re.search(r"(\d{2}:\d{2}:\d{2})", text)
                 if m:
                     self.time = m.group(1)
             self._in_tag = None
-        elif tag == "div" and self._in_class == "meta-bar":
+        elif tag == "div" and self._in_class == "forum-meta":
             self._in_class = None
-
-        elif self._in_reply_body and tag == "div":
-            if self._reply_body_depth <= 0:
-                self._in_reply_body = False
-            else:
-                self._reply_body_depth -= 1
 
     def handle_data(self, data):
         if self._in_tag in ("title", "authors", "meta-span"):
             self._current_text.append(data)
-        if self._in_reply_body:
-            stripped = data.strip()
-            if stripped:
-                self.review_text_parts.append(stripped)
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +235,7 @@ def compute_content_hash(meta: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def download_pdf(
-    pdf_source_url: str, rx_id: str, version: int,
+    pdf_source_url: str, review_id: str, version: int,
     prefix: str = "review",
     gcs_bucket: str | None = None,
 ) -> str | None:
@@ -266,7 +249,9 @@ def download_pdf(
     if not pdf_data:
         return None
 
-    filename = f"{prefix}_{rx_id}v{version}.pdf"
+    # Sanitize review_id for filename (replace : and / with _)
+    safe_id = review_id.replace(":", "_").replace("/", "_")
+    filename = f"{prefix}_{safe_id}v{version}.pdf"
 
     if gcs_bucket:
         try:
@@ -292,28 +277,31 @@ def upsert_review(
     gcs_bucket: str | None = GCS_BUCKET,
     skip_pdf: bool = False,
 ) -> tuple[str, int, str]:
-    """Insert or update a review. Returns (rx_id, version, action)."""
+    """Insert or update a review. Returns (review_id, version, action)."""
     repo = meta["repo"]
     content_hash = compute_content_hash(meta)
     sections = meta.get("sections", {})
 
-    rx_id = get_or_assign_id(conn, repo, meta["review_date"])
+    # Derive paper repo from review repo: "review-{paper_repo}" → "{paper_repo}"
+    paper_repo = repo[len("review-"):] if repo.startswith("review-") else repo
+
+    review_id = get_or_assign_review_id(conn, paper_repo=paper_repo, review_repo=repo, org=org)
 
     existing = conn.execute(
         "SELECT version, content_hash FROM reviews "
-        "WHERE rx_id = ? AND is_current = 1",
-        (rx_id,),
+        "WHERE review_id = ? AND is_current = 1",
+        (review_id,),
     ).fetchone()
 
     if existing and existing["content_hash"] == content_hash:
-        return rx_id, existing["version"], "unchanged"
+        return review_id, existing["version"], "unchanged"
 
     if existing:
         old_version = existing["version"]
         new_version = old_version + 1
         conn.execute(
-            "UPDATE reviews SET is_current = 0 WHERE rx_id = ? AND version = ?",
-            (rx_id, old_version),
+            "UPDATE reviews SET is_current = 0 WHERE review_id = ? AND version = ?",
+            (review_id, old_version),
         )
         action = "updated"
     else:
@@ -324,24 +312,27 @@ def upsert_review(
     paper_pdf_url = ""
     if not skip_pdf:
         review_pdf_url = download_pdf(
-            meta["review_pdf_source_url"], rx_id, new_version,
+            meta["review_pdf_source_url"], review_id, new_version,
             prefix="review", gcs_bucket=gcs_bucket,
         ) or ""
         paper_pdf_url = download_pdf(
-            meta["paper_pdf_source_url"], rx_id, new_version,
+            meta["paper_pdf_source_url"], review_id, new_version,
             prefix="paper", gcs_bucket=gcs_bucket,
         ) or ""
 
+    # Extract PX ID from the review_id (e.g. "2604.00003-R1" → "2604.00003")
+    px_id = review_id.rsplit("-R", 1)[0] if "-R" in review_id else ""
+
     conn.execute(
         "INSERT INTO reviews "
-        "(rx_id, version, paper_title, paper_author, review_date, "
+        "(review_id, version, paper_title, paper_author, review_date, "
         " summary, strengths, major_issues, minor_issues, very_minor_issues, "
         " maths_audit, numerics_audit, reviewer, repo, "
         " pages_url, github_url, review_pdf_url, paper_pdf_url, "
-        " paper_pages_url, is_current, content_hash) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+        " paper_pages_url, px_id, is_current, content_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
         (
-            rx_id, new_version,
+            review_id, new_version,
             meta["paper_title"], meta["paper_author"], meta["review_date"],
             sections.get("summary", ""),
             sections.get("strengths", ""),
@@ -355,13 +346,14 @@ def upsert_review(
             meta["pages_url"], meta["github_url"],
             review_pdf_url, paper_pdf_url,
             meta.get("paper_pages_url", ""),
+            px_id,
             content_hash,
         ),
     )
     conn.commit()
 
-    log.info("%s %s v%d (%s)", action.upper(), rx_id, new_version, meta["paper_title"][:60])
-    return rx_id, new_version, action
+    log.info("%s %s v%d (%s)", action.upper(), review_id, new_version, meta["paper_title"][:60])
+    return review_id, new_version, action
 
 
 # ---------------------------------------------------------------------------

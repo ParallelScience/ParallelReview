@@ -3,4 +3,6 @@ __pycache__/
 *.db
 logs/
 .DS_Store
+.env
+skepthical_src/
 

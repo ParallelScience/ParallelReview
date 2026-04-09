@@ -1,0 +1,54 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# System deps (from Skepthical's Dockerfile)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    fontconfig \
+    fonts-noto-color-emoji \
+    fonts-noto-cjk \
+    libfreetype6 \
+    libjpeg62-turbo \
+    zlib1g \
+ && rm -rf /var/lib/apt/lists/*
+
+# Node.js 24 (for KaTeX vendoring)
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/*
+
+# Vendor KaTeX assets for offline math rendering in review PDFs
+RUN mkdir -p /app/output/assets/katex \
+ && cd /tmp && npm init -y && npm install katex \
+ && cp -R node_modules/katex/dist/. /app/output/assets/katex/ \
+ && rm -rf /tmp/node_modules /tmp/package*
+
+# Install Python deps first (layer caching)
+COPY requirements-reviewer.txt /app/
+RUN pip install --no-cache-dir -r requirements-reviewer.txt
+
+# Install Playwright Chromium for PDF export
+RUN python -m playwright install --with-deps chromium
+
+# Install Skepthical from source
+COPY skepthical_src/ /app/skepthical_src/
+RUN pip install -e /app/skepthical_src/
+
+# Symlink KaTeX assets into Skepthical's expected location
+RUN ln -sf /app/output/assets /app/skepthical_src/skepthical/assets
+
+# Copy ParallelReview app
+COPY review_browse/ /app/review_browse/
+COPY scripts/ /app/scripts/
+COPY main.py wsgi.py pyproject.toml README.md /app/
+RUN pip install --no-cache-dir -e /app
+
+EXPOSE 8090
+
+CMD ["gunicorn", "--bind", "0.0.0.0:8090", "--workers", "1", "--threads", "4", "--timeout", "0", "wsgi:app"]
