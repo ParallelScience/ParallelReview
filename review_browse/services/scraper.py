@@ -326,10 +326,6 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
 
     # Fetch and parse the review markdown
     review_md = fetch_review_md(org, repo)
-
-    # Sanitize math notation for proper rendering
-    review_md = _sanitize_review_math(review_md)
-
     sections = parse_review_md(review_md)
 
     # If the HTML title is just a repo slug, try to extract the real title
