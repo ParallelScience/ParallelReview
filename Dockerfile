@@ -12,6 +12,6 @@ RUN pip install --no-cache-dir -e .
 RUN useradd -m reviewer
 USER reviewer
 
-ENV GUNICORN_CMD="gunicorn --bind :8080 --workers 5 --threads 10 --timeout 0 --preload wsgi:app"
+ENV GUNICORN_CMD="gunicorn --bind :8080 --workers 1 --threads 10 --timeout 120 --preload wsgi:app"
 EXPOSE 8080
 CMD exec $GUNICORN_CMD

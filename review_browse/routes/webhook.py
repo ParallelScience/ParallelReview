@@ -519,8 +519,22 @@ def cron_rescrape() -> Response:
     """Re-scrape all review repos and sync DB to GCS.
 
     Intended to be called by Cloud Scheduler or similar cron.
-    Catches any reviews missed by webhooks.
+    Requires WEBHOOK_SECRET as Bearer token or X-Cron-Secret header.
+    Also allows Google Cloud Scheduler (User-Agent: Google-Cloud-Scheduler).
     """
+    # Auth check: allow Cloud Scheduler, or require the webhook secret
+    secret = current_app.config.get("WEBHOOK_SECRET", "")
+    user_agent = request.headers.get("User-Agent", "")
+    auth_header = request.headers.get("Authorization", "")
+    cron_secret = request.headers.get("X-Cron-Secret", "")
+
+    is_cloud_scheduler = "Google-Cloud-Scheduler" in user_agent
+    is_bearer_match = secret and auth_header == f"Bearer {secret}"
+    is_header_match = secret and cron_secret == secret
+
+    if not (is_cloud_scheduler or is_bearer_match or is_header_match):
+        return Response("Unauthorized", status=403)
+
     from review_browse.services.database import get_db, sync_to_gcs
     from review_browse.services.scraper import scrape_all_repos
 

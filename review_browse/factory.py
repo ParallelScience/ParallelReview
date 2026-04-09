@@ -97,7 +97,7 @@ def create_app(**kwargs) -> Flask:
     from markupsafe import Markup
 
     def render_markdown(text: str) -> Markup:
-        """Render markdown text to HTML for display in templates."""
+        """Render markdown text to sanitized HTML for display in templates."""
         if not text:
             return Markup("")
         html = _md.markdown(
@@ -105,6 +105,11 @@ def create_app(**kwargs) -> Flask:
             extensions=["extra", "tables", "fenced_code", "sane_lists"],
             output_format="html5",
         )
+        # Sanitize: strip dangerous tags/attributes (prevent XSS)
+        import re as _sanitize_re
+        html = _sanitize_re.sub(r'<script[^>]*>.*?</script>', '', html, flags=_sanitize_re.DOTALL | _sanitize_re.IGNORECASE)
+        html = _sanitize_re.sub(r'<iframe[^>]*>.*?</iframe>', '', html, flags=_sanitize_re.DOTALL | _sanitize_re.IGNORECASE)
+        html = _sanitize_re.sub(r'\bon\w+\s*=', '', html, flags=_sanitize_re.IGNORECASE)
         return Markup(html)
 
     app.jinja_env.filters["markdown"] = render_markdown
