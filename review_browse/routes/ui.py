@@ -22,6 +22,18 @@ blueprint = Blueprint("review_browse", __name__, url_prefix="/")
 # Home
 # ---------------------------------------------------------------------------
 
+def _sort_reviews(reviews: list[dict], sort_key: str) -> list[dict]:
+    """Sort reviews by the given key."""
+    if sort_key == "score":
+        return sorted(reviews, key=lambda r: r.get("score_overall") or 0, reverse=True)
+    elif sort_key == "score_asc":
+        return sorted(reviews, key=lambda r: r.get("score_overall") or 0)
+    elif sort_key == "date_asc":
+        return sorted(reviews, key=lambda r: r.get("review_date", ""))
+    else:  # default: date descending (newest first)
+        return sorted(reviews, key=lambda r: r.get("review_date", ""), reverse=True)
+
+
 @blueprint.route("index", methods=["GET"])
 @blueprint.route("/", methods=["GET"])
 def home() -> Response:
@@ -30,9 +42,12 @@ def home() -> Response:
     for r in reviews:
         r["issues"] = count_issues(r)
         r["date_short"] = _format_date_short(r.get("review_date", ""))
+    sort_by = request.args.get("sort", "date")
+    reviews = _sort_reviews(reviews, sort_by)
     return render_template("home/home.html",
                            reviews=reviews,
                            review_count=len(reviews),
+                           sort_by=sort_by,
                            now=datetime.now().strftime("%a, %d %b %Y")), status.OK, {}
 
 
@@ -90,9 +105,12 @@ def notes() -> Response:
         r["issues"] = count_issues(r)
         r["date_short"] = _format_date_short(r.get("review_date", ""))
 
+    sort_by = request.args.get("sort", "date")
+    reviews = _sort_reviews(reviews, sort_by)
     return render_template("list/review_list.html",
                            reviews=reviews,
                            context=context,
+                           sort_by=sort_by,
                            now=datetime.now().strftime("%a, %d %b %Y")), status.OK, {}
 
 
@@ -109,9 +127,12 @@ def group() -> Response:
         r["issues"] = count_issues(r)
         r["date_short"] = _format_date_short(r.get("review_date", ""))
 
+    sort_by = request.args.get("sort", "date")
+    reviews = _sort_reviews(reviews, sort_by)
     return render_template("list/review_list.html",
                            reviews=reviews,
                            context="Recent Reviews",
+                           sort_by=sort_by,
                            now=datetime.now().strftime("%a, %d %b %Y")), status.OK, {}
 
 

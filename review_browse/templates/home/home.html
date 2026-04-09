@@ -22,7 +22,16 @@
 </div>
 
 {% if reviews %}
-<h3 style="margin-bottom:0.75rem;">Recent Reviews</h3>
+<div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:0.75rem;">
+  <h3 style="margin:0;">Recent Reviews</h3>
+  <div class="sort-controls">
+    Sort:
+    <a href="?sort=date" class="{{ 'active' if sort_by == 'date' else '' }}">Newest</a>
+    <a href="?sort=date_asc" class="{{ 'active' if sort_by == 'date_asc' else '' }}">Oldest</a>
+    <a href="?sort=score" class="{{ 'active' if sort_by == 'score' else '' }}">Highest Score</a>
+    <a href="?sort=score_asc" class="{{ 'active' if sort_by == 'score_asc' else '' }}">Lowest Score</a>
+  </div>
+</div>
 <ul class="review-list">
   {% for r in reviews %}
   <li class="review-list-item">

@@ -599,6 +599,27 @@ h4 { color: var(--or-red); font-weight: 700; }
 .score-badge-mid { background: #e67e22; }
 .score-badge-low { background: #c0392b; }
 
+/* --- Sort controls --- */
+.sort-controls {
+  font-size: 0.8125rem;
+  color: var(--or-gray);
+}
+.sort-controls a {
+  color: var(--or-blue);
+  text-decoration: none;
+  padding: 0.15em 0.4em;
+  border-radius: 3px;
+  margin-left: 0.15em;
+}
+.sort-controls a:hover {
+  background: var(--or-surface-alt);
+}
+.sort-controls a.active {
+  font-weight: 700;
+  color: var(--or-dark);
+  background: var(--or-sandy);
+}
+
 .strength-item {
   padding: 0.375rem 0.75rem;
   margin-bottom: 0.25rem;
