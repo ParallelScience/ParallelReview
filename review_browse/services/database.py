@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     paper_pages_url     TEXT NOT NULL DEFAULT '',
     px_id               TEXT NOT NULL DEFAULT '',
     is_current          INTEGER NOT NULL DEFAULT 1,
+    total_cost          REAL,
     scraped_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     content_hash        TEXT,
     PRIMARY KEY (review_id, version),
@@ -209,6 +210,11 @@ def init_db(app: Flask) -> None:
     conn = _connect()
     try:
         conn.executescript(SCHEMA_SQL)
+        # Migrate: add total_cost column if missing
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(reviews)").fetchall()}
+        if "total_cost" not in cols:
+            conn.execute("ALTER TABLE reviews ADD COLUMN total_cost REAL")
+            print("[RX] Migrated: added total_cost column to reviews", flush=True)
         conn.commit()
     finally:
         conn.close()

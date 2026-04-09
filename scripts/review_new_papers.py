@@ -278,6 +278,18 @@ def run_skepthical_review(pdf_path: str, work_dir: str) -> dict:
     sk = Skepthical(params_skepthical=params)
     report = sk.run()
 
+    # Extract total cost from Skepthical's final context
+    total_cost = None
+    try:
+        cost_df = sk.final_context.get("cost_dataframe")
+        if cost_df is not None:
+            total_row = cost_df[cost_df["Agent"] == "Total"]
+            if not total_row.empty:
+                total_cost = float(total_row["Cost ($)"].iloc[0])
+                print(f"  Review cost: ${total_cost:.4f}")
+    except Exception as e:
+        print(f"  Warning: could not extract cost: {e}")
+
     # Extract markdown
     review_md = ""
     if isinstance(report, str):
@@ -296,10 +308,11 @@ def run_skepthical_review(pdf_path: str, work_dir: str) -> dict:
     if pdf_files:
         review_pdf = pdf_files[-1]
 
-    return {"report_md": review_md, "report_pdf": review_pdf}
+    return {"report_md": review_md, "report_pdf": review_pdf, "total_cost": total_cost}
 
 
-def publish_review(paper: dict, review_md: str, review_pdf: str, paper_pdf: str) -> str:
+def publish_review(paper: dict, review_md: str, review_pdf: str, paper_pdf: str,
+                    total_cost: float | None = None) -> str:
     """Publish a review to a GitHub Pages repo. Returns the pages URL."""
     from datetime import datetime, timezone, timedelta
 
@@ -312,6 +325,9 @@ def publish_review(paper: dict, review_md: str, review_pdf: str, paper_pdf: str)
         f.write(review_md)
     if review_pdf and os.path.exists(review_pdf):
         shutil.copy2(review_pdf, os.path.join(publish_dir, "review.pdf"))
+    if total_cost is not None:
+        with open(os.path.join(publish_dir, "cost.json"), "w") as f:
+            json.dump({"total_cost": total_cost}, f)
 
     # Build the page
     build_script = os.path.join(os.path.dirname(__file__), "build_review_page.py")
@@ -473,6 +489,7 @@ def review_paper(paper: dict) -> bool:
         print(f"  Publishing review...")
         pages_url = publish_review(
             paper, result["report_md"], result["report_pdf"], pdf_path,
+            total_cost=result.get("total_cost"),
         )
 
         print(f"  DONE: {pages_url}")

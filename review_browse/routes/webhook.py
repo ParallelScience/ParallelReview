@@ -338,6 +338,18 @@ def _run_review_background(org_name: str, repo_name: str):
         sk = Skepthical(params_skepthical=params_skepthical)
         report = sk.run()
 
+        # Extract total cost from Skepthical's final context
+        total_cost = None
+        try:
+            cost_df = sk.final_context.get("cost_dataframe")
+            if cost_df is not None:
+                total_row = cost_df[cost_df["Agent"] == "Total"]
+                if not total_row.empty:
+                    total_cost = float(total_row["Cost ($)"].iloc[0])
+                    log.info("[review-bg] Review cost for %s: $%.4f", repo_name, total_cost)
+        except Exception as e:
+            log.warning("[review-bg] Could not extract cost: %s", e)
+
         # Extract markdown
         review_md = ""
         if isinstance(report, str):
@@ -367,6 +379,9 @@ def _run_review_background(org_name: str, repo_name: str):
             f.write(review_md)
         if review_pdf_path and os.path.exists(review_pdf_path):
             shutil.copy2(review_pdf_path, os.path.join(publish_dir, "review.pdf"))
+        if total_cost is not None:
+            with open(os.path.join(publish_dir, "cost.json"), "w") as f:
+                json.dump({"total_cost": total_cost}, f)
 
         # Build the review page
         build_script = os.path.join(

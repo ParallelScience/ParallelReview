@@ -191,6 +191,19 @@ def parse_page(html: str) -> dict | None:
     }
 
 
+def _fetch_cost_json(org: str, repo: str) -> float | None:
+    """Fetch cost.json from the review repo's Pages site."""
+    import urllib.request
+    url = f"https://{org.lower()}.github.io/{repo}/cost.json"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as resp:
+            data = json.loads(resp.read())
+        cost = data.get("total_cost")
+        return float(cost) if cost is not None else None
+    except Exception:
+        return None
+
+
 def _looks_like_repo_slug(title: str) -> bool:
     """Return True if title looks like a repo slug rather than a real title."""
     # Repo slugs are all lowercase with hyphens and no spaces
@@ -251,6 +264,11 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
                     log.info("Author from paper page for %s: %s", repo, meta["paper_author"])
             except Exception:
                 pass
+
+    # Fetch cost.json if available
+    total_cost = _fetch_cost_json(org, repo)
+    if total_cost is not None:
+        meta["total_cost"] = total_cost
 
     meta["repo"] = repo
     meta["pages_url"] = f"https://{org.lower()}.github.io/{repo}/"
@@ -377,8 +395,8 @@ def upsert_review(
         " summary, strengths, major_issues, minor_issues, very_minor_issues, "
         " maths_audit, numerics_audit, reviewer, repo, "
         " pages_url, github_url, review_pdf_url, paper_pdf_url, "
-        " paper_pages_url, px_id, is_current, content_hash) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+        " paper_pages_url, px_id, total_cost, is_current, content_hash) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
         (
             review_id, new_version,
             meta["paper_title"], meta["paper_author"], meta["review_date"],
@@ -395,6 +413,7 @@ def upsert_review(
             review_pdf_url, paper_pdf_url,
             meta.get("paper_pages_url", ""),
             px_id,
+            meta.get("total_cost"),
             content_hash,
         ),
     )
