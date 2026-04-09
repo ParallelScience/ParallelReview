@@ -25,9 +25,9 @@ blueprint = Blueprint("review_browse", __name__, url_prefix="/")
 def _sort_reviews(reviews: list[dict], sort_key: str) -> list[dict]:
     """Sort reviews by the given key."""
     if sort_key == "score":
-        return sorted(reviews, key=lambda r: r.get("score_overall") or 0, reverse=True)
+        return sorted(reviews, key=lambda r: (r.get("score_overall") is not None, r.get("score_overall") or 0), reverse=True)
     elif sort_key == "score_asc":
-        return sorted(reviews, key=lambda r: r.get("score_overall") or 0)
+        return sorted(reviews, key=lambda r: (r.get("score_overall") is None, r.get("score_overall") or 0))
     elif sort_key == "date_asc":
         return sorted(reviews, key=lambda r: r.get("review_date", ""))
     else:  # default: date descending (newest first)

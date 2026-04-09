@@ -112,7 +112,7 @@ def _handle_paper_repo(org_name: str, repo_name: str) -> Response:
     import re
     import urllib.request
 
-    # --- Guard: already reviewing this paper? ---
+    # --- Guard: already reviewing this paper? Claim slot atomically ---
     with _active_reviews_lock:
         if repo_name in _active_reviews:
             log.info("Already reviewing %s, skipping", repo_name)
@@ -127,11 +127,12 @@ def _handle_paper_repo(org_name: str, repo_name: str) -> Response:
                 f'{{"action":"rejected","reason":"max concurrent reviews"}}',
                 status=503, mimetype="application/json",
             )
+        # Claim the slot immediately to prevent races
+        _active_reviews.add(repo_name)
 
     # --- Guard: already has a review repo on GitHub? ---
     try:
         token = os.environ.get("GITHUB_TOKEN", "")
-        # Check for exact match: review-{repo_name}
         check_url = f"https://api.github.com/repos/{org_name}/review-{repo_name}"
         req = urllib.request.Request(check_url, headers={
             "Authorization": f"Bearer {token}",
@@ -140,6 +141,8 @@ def _handle_paper_repo(org_name: str, repo_name: str) -> Response:
         try:
             urllib.request.urlopen(req, timeout=10)
             log.info("Paper %s already has review repo review-%s, skipping", repo_name, repo_name)
+            with _active_reviews_lock:
+                _active_reviews.discard(repo_name)
             return Response(
                 f'{{"action":"skipped","reason":"review repo exists"}}',
                 status=200, mimetype="application/json",
@@ -147,13 +150,8 @@ def _handle_paper_repo(org_name: str, repo_name: str) -> Response:
         except urllib.error.HTTPError as e:
             if e.code != 404:
                 raise
-            # 404 = no review exists, proceed
     except Exception as e:
         log.warning("Could not check for existing review: %s", e)
-
-    # --- Register and launch ---
-    with _active_reviews_lock:
-        _active_reviews.add(repo_name)
 
     log.info("Launching Skepthical review for %s/%s", org_name, repo_name)
     thread = threading.Thread(

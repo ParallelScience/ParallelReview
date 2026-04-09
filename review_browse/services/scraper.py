@@ -191,7 +191,8 @@ def parse_page(html: str) -> dict | None:
     }
 
 
-_SANITIZE_CACHE: dict[str, str] = {}
+_SANITIZE_CACHE: dict[str, str] = {}  # bounded: cleared when > 50 entries
+_SANITIZE_CACHE_MAX = 50
 
 
 def _sanitize_review_math(md_text: str) -> str:
@@ -206,6 +207,8 @@ def _sanitize_review_math(md_text: str) -> str:
     content_hash = hashlib.sha256(md_text.encode()).hexdigest()[:16]
     if content_hash in _SANITIZE_CACHE:
         return _SANITIZE_CACHE[content_hash]
+    if len(_SANITIZE_CACHE) >= _SANITIZE_CACHE_MAX:
+        _SANITIZE_CACHE.clear()
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
