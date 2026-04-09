@@ -79,18 +79,13 @@
       <div style="margin-bottom:0.75rem;">
         <span class="field-label" style="color:var(--or-red);font-weight:700;font-size:0.75rem;">Major Issues ({{ review.issues.major }}):</span>
         <ul class="issue-list">
-          {% for line in review.major_issues.split('\n') %}
-          {% set stripped = line.strip() %}
-          {% if stripped and (stripped[0].isdigit() or stripped.startswith('-')) %}
-          {% set text = stripped.lstrip('-*0123456789. ') %}
+          {% for item in review.major_issues|parse_issues %}
           <li class="issue-item issue-major">
-            <div class="issue-title">{{ text }}</div>
+            <div class="issue-title">{{ item.title }}</div>
+            {% if item.recommendation %}
+            <div class="issue-rec"><span class="rec-label">Recommendation:</span> {{ item.recommendation }}</div>
+            {% endif %}
           </li>
-          {% elif stripped and stripped.lower().startswith('recommendation:') %}
-          <li class="issue-item issue-major">
-            <div class="issue-rec">{{ stripped }}</div>
-          </li>
-          {% endif %}
           {% endfor %}
         </ul>
       </div>
@@ -101,14 +96,13 @@
       <div style="margin-bottom:0.75rem;">
         <span class="field-label" style="color:var(--or-red);font-weight:700;font-size:0.75rem;">Minor Issues ({{ review.issues.minor }}):</span>
         <ul class="issue-list">
-          {% for line in review.minor_issues.split('\n') %}
-          {% set stripped = line.strip() %}
-          {% if stripped and (stripped[0].isdigit() or stripped.startswith('-')) %}
-          {% set text = stripped.lstrip('-*0123456789. ') %}
+          {% for item in review.minor_issues|parse_issues %}
           <li class="issue-item issue-minor">
-            <div class="issue-title">{{ text }}</div>
+            <div class="issue-title">{{ item.title }}</div>
+            {% if item.recommendation %}
+            <div class="issue-rec"><span class="rec-label">Recommendation:</span> {{ item.recommendation }}</div>
+            {% endif %}
           </li>
-          {% endif %}
           {% endfor %}
         </ul>
       </div>
@@ -119,14 +113,13 @@
       <div style="margin-bottom:0.75rem;">
         <span class="field-label" style="color:var(--or-red);font-weight:700;font-size:0.75rem;">Very Minor Issues:</span>
         <ul class="issue-list">
-          {% for line in review.very_minor_issues.split('\n') %}
-          {% set stripped = line.strip() %}
-          {% if stripped and (stripped[0].isdigit() or stripped.startswith('-')) %}
-          {% set text = stripped.lstrip('-*0123456789. ') %}
+          {% for item in review.very_minor_issues|parse_issues %}
           <li class="issue-item issue-vminor">
-            <div class="issue-title">{{ text }}</div>
+            <div class="issue-title">{{ item.title }}</div>
+            {% if item.recommendation %}
+            <div class="issue-rec"><span class="rec-label">Recommendation:</span> {{ item.recommendation }}</div>
+            {% endif %}
           </li>
-          {% endif %}
           {% endfor %}
         </ul>
       </div>

@@ -440,12 +440,14 @@ h4 { color: var(--or-red); font-weight: 700; }
 .issue-minor { border-left-color: #e67e22; background: #fff3cd; }
 .issue-vminor { border-left-color: #7f8c8d; background: #e2e3e5; }
 
-.issue-item .issue-title { font-weight: 600; }
+.issue-item .issue-title { font-weight: 400; }
 .issue-item .issue-rec {
-  font-size: 0.75rem;
-  color: var(--or-gray);
+  font-size: 0.8125rem;
+  color: var(--or-dark);
+  margin-top: 0.5rem;
+}
+.issue-item .issue-rec .rec-label {
   font-style: italic;
-  margin-top: 0.125rem;
 }
 
 .strength-item {
