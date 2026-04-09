@@ -92,7 +92,13 @@ def _handle_review_repo(org_name: str, repo_name: str) -> Response:
     rx_id, version, action = upsert_review(conn, meta, org_name, gcs_bucket=gcs_bucket)
 
     if action != "unchanged":
-        sync_to_gcs()
+        if not sync_to_gcs():
+            log.error("GCS sync failed after indexing %s — returning 500 so GitHub retries", rx_id)
+            return Response(
+                f'{{"review_id":"{rx_id}","version":{version},"action":"{action}","gcs_sync":false}}',
+                status=500,
+                mimetype="application/json",
+            )
 
     return Response(
         f'{{"review_id":"{rx_id}","version":{version},"action":"{action}"}}',
@@ -471,3 +477,38 @@ def _run_review_background(org_name: str, repo_name: str):
         shutil.rmtree(work_dir, ignore_errors=True)
         with _active_reviews_lock:
             _active_reviews.discard(repo_name)
+
+
+# ---------------------------------------------------------------------------
+# Cron: safety-net full rescrape
+# ---------------------------------------------------------------------------
+
+@blueprint.route("/cron/rescrape", methods=["POST"])
+def cron_rescrape() -> Response:
+    """Re-scrape all review repos and sync DB to GCS.
+
+    Intended to be called by Cloud Scheduler or similar cron.
+    Catches any reviews missed by webhooks.
+    """
+    from review_browse.services.database import get_db, sync_to_gcs
+    from review_browse.services.scraper import scrape_all_repos
+
+    org = current_app.config.get("GITHUB_ORG", "ParallelScience")
+    gcs_bucket = current_app.config.get("GCS_BUCKET", "parallel-review")
+
+    conn = get_db()
+    counts = scrape_all_repos(conn, org=org, gcs_bucket=gcs_bucket)
+
+    total_changes = counts.get("new", 0) + counts.get("updated", 0)
+    if total_changes > 0:
+        synced = sync_to_gcs()
+        counts["gcs_synced"] = synced
+        if not synced:
+            log.error("GCS sync failed after cron rescrape")
+    else:
+        # Sync anyway as a heartbeat — ensures GCS has the latest DB
+        sync_to_gcs()
+
+    log.info("Cron rescrape complete: %s", counts)
+    import json
+    return Response(json.dumps(counts), status=200, mimetype="application/json")
