@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-SECRET="8b33a2f32d67a79730a16eee79f6626146cd2e34f078f750d98a883614087f0f"
+# WEBHOOK_SECRET must be provided via the environment, e.g.:
+#   set -a; source /scratch/scratch-aiscientist/parallelscience/ParallelReview/.env; set +a
+#   ./scripts/trigger_all_reviews.sh
+# Never hardcode the secret here — this script lives in a public repo.
+if [ -z "${WEBHOOK_SECRET:-}" ]; then
+    echo "ERROR: WEBHOOK_SECRET env var not set. Source the .env file first." >&2
+    exit 1
+fi
+SECRET="$WEBHOOK_SECRET"
 LOCAL_URL="https://orion.taila855ba.ts.net:8444/webhook/github"
 CLOUD_URL="https://parallel-review-689836870161.us-central1.run.app/webhook/github"
 DB="/scratch/scratch-aiscientist/parallelscience/arxiv-browse/browse/data/papers.db"

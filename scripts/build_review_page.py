@@ -366,6 +366,16 @@ def build(publish_dir: str, repo_url: str, author: str, title: str,
     if os.path.exists(review_md_path):
         shutil.copy2(review_md_path, docs_dir)
 
+    # Also copy scores.json and cost.json if present so they are reachable at
+    # the Pages URL (`https://<org>.github.io/<repo>/scores.json`). The
+    # ParallelReview indexer fetches these via the public Pages site, not via
+    # the GitHub Contents API, so they MUST live under docs/ — they are not
+    # automatically included from the publish dir root.
+    for asset in ("scores.json", "cost.json"):
+        src = os.path.join(publish_dir, asset)
+        if os.path.exists(src):
+            shutil.copy2(src, docs_dir)
+
     # Build review cards
     cards = []
 

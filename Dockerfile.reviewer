@@ -57,4 +57,4 @@ RUN pip install --no-cache-dir -e /app
 
 EXPOSE 8090
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8090", "--workers", "1", "--threads", "4", "--timeout", "0", "wsgi:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8090", "--workers", "1", "--threads", "4", "--timeout", "0", "--access-logfile", "-", "--error-logfile", "-", "wsgi:app"]

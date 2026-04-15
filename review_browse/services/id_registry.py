@@ -12,28 +12,101 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
+import time
+import urllib.request
 
 log = logging.getLogger(__name__)
 
-# Path to arxiv-browse DB (local fallback for PX ID lookup)
-_ARXIV_DB = os.environ.get(
-    "PARALLEL_ARXIV_DB",
-    os.path.join(os.path.dirname(__file__), "..", "..", "..",
-                 "arxiv-browse", "browse", "data", "papers.db"),
+# Canonical arxiv-browse DB lives in GCS. Cloud Run writes to it via the
+# authenticated SDK on every webhook ingest, but reading it via the public
+# URL (storage.googleapis.com/...) is subject to GCS's edge cache — the
+# object's default `Cache-Control: public, max-age=3600` means readers can
+# see bytes up to an hour old. Prefer the authenticated SDK whenever
+# credentials are available (Cloud Run), and fall back to the public URL
+# for contexts that don't have ADC (local container).
+_ARXIV_GCS_URI = os.environ.get(
+    "PARALLEL_ARXIV_DB_URI",
+    "gs://parallel-arxiv-pdfs/papers.db",
 )
+_ARXIV_DB_URL = os.environ.get(
+    "PARALLEL_ARXIV_DB_URL",
+    "https://storage.googleapis.com/parallel-arxiv-pdfs/papers.db",
+)
+
+# In-process cache: (timestamp, local_path). Keep short so new papers show
+# up within the minute of arxiv-browse ingesting them (important for new
+# reviews that race with the paper's own page_build webhook).
+_ARXIV_CACHE: dict = {"ts": 0.0, "path": ""}
+_ARXIV_CACHE_TTL_S = 60
+
+
+def _parse_gcs_uri(uri: str) -> tuple[str, str] | None:
+    m = re.match(r"gs://([^/]+)/(.+)", uri)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def _get_arxiv_db_path() -> str | None:
+    """Download the canonical arxiv DB to /tmp (with 60s TTL cache).
+
+    Prefers authenticated GCS SDK (bypasses edge cache) and falls back to
+    the public URL if the SDK / credentials aren't available.
+    """
+    now = time.time()
+    cached = _ARXIV_CACHE.get("path", "")
+    if cached and os.path.exists(cached) and (now - _ARXIV_CACHE["ts"]) < _ARXIV_CACHE_TTL_S:
+        return cached
+
+    local = os.path.join(tempfile.gettempdir(), "id_registry_arxiv_papers.db")
+
+    # Try authenticated SDK first
+    try:
+        from google.cloud import storage
+        from google.auth.exceptions import DefaultCredentialsError
+        parsed = _parse_gcs_uri(_ARXIV_GCS_URI)
+        if parsed:
+            bucket_name, blob_path = parsed
+            try:
+                client = storage.Client()
+            except DefaultCredentialsError:
+                client = None
+            if client is not None:
+                blob = client.bucket(bucket_name).blob(blob_path)
+                blob.reload()
+                blob.download_to_filename(local)
+                _ARXIV_CACHE["ts"] = now
+                _ARXIV_CACHE["path"] = local
+                log.info("id_registry: fetched arxiv DB via SDK (gen=%s)", blob.generation)
+                return local
+    except Exception as exc:
+        log.warning("id_registry: SDK fetch failed (%s); falling back to public URL", exc)
+
+    # Fallback: public URL (may be edge-cached up to max-age)
+    try:
+        urllib.request.urlretrieve(_ARXIV_DB_URL, local)
+        _ARXIV_CACHE["ts"] = now
+        _ARXIV_CACHE["path"] = local
+        return local
+    except Exception as exc:
+        log.warning("id_registry: failed to fetch arxiv DB from %s: %s", _ARXIV_DB_URL, exc)
+        return None
 
 
 def _lookup_px_id_from_db(paper_repo: str) -> str | None:
-    """Look up a paper's PX ID from the local arxiv-browse database.
+    """Look up a paper's PX ID from the canonical arxiv-browse database.
 
     Tries exact match first, then prefix match for truncated repo names
     (GitHub truncates long repo names, so review-{paper_repo} may be shorter
-    than the actual paper repo name).
+    than the actual paper repo name), and reverse prefix match (in case the
+    db.repo is a prefix of our paper_repo).
     """
-    if not os.path.exists(_ARXIV_DB):
+    db_path = _get_arxiv_db_path()
+    if not db_path:
         return None
     try:
-        conn = sqlite3.connect(_ARXIV_DB)
+        # Open immutable + read-only via URI so SQLite does not try to create
+        # -wal/-shm sidecars.
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro&immutable=1", uri=True)
         conn.row_factory = sqlite3.Row
         # Exact match
         row = conn.execute(
@@ -41,13 +114,24 @@ def _lookup_px_id_from_db(paper_repo: str) -> str | None:
             (paper_repo,),
         ).fetchone()
         if not row and len(paper_repo) > 20:
-            # Prefix match for truncated names
+            # Our repo is a prefix of the db.repo (db has the full, untruncated name)
             row = conn.execute(
                 "SELECT px_id FROM papers WHERE repo LIKE ? AND is_current = 1",
                 (paper_repo + "%",),
             ).fetchone()
             if row:
                 log.info("PX ID found via prefix match: %s -> %s", paper_repo, row["px_id"])
+        if not row and len(paper_repo) > 20:
+            # db.repo is a prefix of our paper_repo (GitHub truncated our side)
+            row = conn.execute(
+                "SELECT px_id, repo FROM papers "
+                "WHERE ? LIKE repo || '%' AND length(repo) >= 20 "
+                "AND is_current = 1",
+                (paper_repo,),
+            ).fetchone()
+            if row:
+                log.info("PX ID found via reverse prefix match: %s -> %s (db.repo=%s)",
+                         paper_repo, row["px_id"], row["repo"])
         conn.close()
         return row["px_id"] if row else None
     except Exception as e:

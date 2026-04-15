@@ -168,14 +168,35 @@ def author_redirect(author: str) -> Response:
 # ---------------------------------------------------------------------------
 
 def _serve_pdf(review_id: str, version: int | None) -> Response:
+    """Stream the review PDF for a given review id.
+
+    Always serve from the live GitHub Pages URL (`pages_url + "/review.pdf"`)
+    rather than from the `review_pdf_url` column. The DB column points at a
+    GCS-cached copy that was uploaded once at first ingest and is never
+    refreshed unless `content_hash` changes — so any later regeneration of
+    `review.pdf` (e.g. a Skepthical CSS fix) silently fails to propagate to
+    the user-visible PDF. Reading the live Pages copy on every request makes
+    the served PDF always reflect what is actually published in the review
+    repo, with zero cache-invalidation logic to maintain.
+
+    Falls back to `review_pdf_url` only if `pages_url` is somehow missing,
+    so reviews that were ingested via a path that didn't capture pages_url
+    (legacy rows) still resolve.
+    """
     import urllib.request
     from review_browse.services.reviews import get_review_by_id
     review = get_review_by_id(review_id, version=version)
     if review is None:
         return "Review not found", status.NOT_FOUND, {}
-    url = review.get("review_pdf_url", "")
+
+    pages_url = (review.get("pages_url") or "").rstrip("/")
+    if pages_url:
+        url = pages_url + "/review.pdf"
+    else:
+        url = review.get("review_pdf_url", "")
     if not url:
-        url = review.get("pages_url", "").rstrip("/") + "/review.pdf"
+        return "PDF not available", status.NOT_FOUND, {}
+
     try:
         with urllib.request.urlopen(url, timeout=15) as resp:
             pdf_data = resp.read()
@@ -183,8 +204,20 @@ def _serve_pdf(review_id: str, version: int | None) -> Response:
         return "PDF not available", status.NOT_FOUND, {}
     v = review.get("version", 1)
     safe_id = review_id.replace(":", "_")
-    return Response(pdf_data, mimetype="application/pdf",
-                    headers={"Content-Disposition": f"inline; filename=review_{safe_id}v{v}.pdf"})
+    # `Cache-Control: no-store` prevents browser-side caching of the PDF.
+    # Chromium in particular aggressively caches `application/pdf` responses;
+    # without this header, users continue to see stale PDFs even after the
+    # underlying review is regenerated and re-published to GitHub Pages.
+    return Response(
+        pdf_data,
+        mimetype="application/pdf",
+        headers={
+            "Content-Disposition": f"inline; filename=review_{safe_id}v{v}.pdf",
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 
 def _format_date_short(date_str: str) -> str:

@@ -1,11 +1,12 @@
 """Application factory for Parallel Review."""
 
 import logging
-from flask import Flask
+import signal
+from flask import Flask, Response
 
 from review_browse.config import Settings
 from review_browse.routes import ui, webhook
-from review_browse.services.database import init_db
+from review_browse.services.database import get_db_standalone, init_db
 
 
 def create_app(**kwargs) -> Flask:
@@ -20,8 +21,48 @@ def create_app(**kwargs) -> Flask:
     app.config.from_object(settings)
 
     init_db(app)
+    # Reconcile the persistent active_reviews table with the current process:
+    # any rows from a prior PID are wiped (their owning process is gone), and
+    # the in-memory concurrency guard is rebuilt from whatever's left.
+    webhook.init_active_reviews_state()
+
+    # Best-effort SIGTERM logging so a deploy/redeploy is observable in logs.
+    # Skepthical reviews can't be checkpointed mid-flight; the daemon threads
+    # will die when gunicorn exits, and on next startup `init_active_reviews_state`
+    # will clear their stale slots so the cron can pick the papers back up.
+    def _handle_sigterm(signum, frame):
+        app.logger.warning(
+            "SIGTERM received — shutting down. Active reviews in flight: %d (will be retried by cron after restart)",
+            len(webhook._active_reviews),
+        )
+        # Re-raise default behaviour so gunicorn proceeds to graceful shutdown.
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (ValueError, OSError):
+        # Not in main thread (e.g. under some test runners) — just skip.
+        pass
+
     app.register_blueprint(ui.blueprint)
     app.register_blueprint(webhook.blueprint)
+
+    @app.route("/healthz")
+    def healthz() -> Response:
+        """Liveness probe used by the Docker healthcheck.
+
+        Confirms the SQLite DB is openable and queryable. Returns 200 only if
+        the DB responds; any failure is a 503 so the orchestrator restarts us.
+        """
+        try:
+            conn = get_db_standalone()
+            try:
+                conn.execute("SELECT 1").fetchone()
+            finally:
+                conn.close()
+            return Response("ok", status=200, mimetype="text/plain")
+        except Exception as exc:
+            app.logger.error("healthz: DB probe failed: %s", exc)
+            return Response(f"db error: {exc}", status=503, mimetype="text/plain")
 
     app.jinja_env.trim_blocks = True
     app.jinja_env.lstrip_blocks = True

@@ -235,12 +235,14 @@ def _sanitize_review_math(md_text: str) -> str:
         )
 
         client = OpenAI(api_key=api_key)
+        # 1 hour: this runs on the background indexing thread now, not the
+        # webhook handler, so we can wait as long as the model needs.
         resp = client.responses.create(
             model="gpt-4.1",
             input=[{"role": "user", "content": [
                 {"type": "input_text", "text": prompt + "\n\n=== DOCUMENT ===\n" + md_text},
             ]}],
-            timeout=120,
+            timeout=3600,
         )
 
         result = getattr(resp, "output_text", None)
@@ -424,13 +426,29 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 def compute_content_hash(meta: dict) -> str:
+    """Stable hash of everything that affects the rendered review.
+
+    Previously this only covered paper_title/author + summary/strengths/
+    major_issues, which meant ANY edit to the minor_issues, very_minor_issues,
+    key_statements, maths_audit, or numerics_audit sections went undetected
+    — `upsert_review` returned "unchanged" and the stale DB fields persisted.
+    That's how the trailing "## Paper Ratings" block kept re-surfacing on
+    reviews even after I stripped it from the source review.md: the strip
+    only affected numerics_audit (where the non-matched heading fell through
+    to), which wasn't in the hash.
+    """
     sections = meta.get("sections", {})
     payload = json.dumps({
-        "paper_title": meta["paper_title"],
-        "paper_author": meta["paper_author"],
+        "paper_title": meta.get("paper_title", ""),
+        "paper_author": meta.get("paper_author", ""),
         "summary": sections.get("summary", ""),
         "strengths": sections.get("strengths", ""),
         "major_issues": sections.get("major_issues", ""),
+        "minor_issues": sections.get("minor_issues", ""),
+        "very_minor_issues": sections.get("very_minor_issues", ""),
+        "key_statements": sections.get("key_statements", ""),
+        "maths_audit": sections.get("maths_audit", ""),
+        "numerics_audit": sections.get("numerics_audit", ""),
     }, sort_keys=True)
     return hashlib.sha256(payload.encode()).hexdigest()
 

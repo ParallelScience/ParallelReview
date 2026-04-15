@@ -17,10 +17,44 @@ from flask import Blueprint, Response, current_app, request
 blueprint = Blueprint("webhook", __name__, url_prefix="/webhook")
 log = logging.getLogger(__name__)
 
+# --- Skepthical availability ---
+# Cloud Run uses the lightweight image (`Dockerfile`, no Skepthical/Playwright)
+# and only acts as the indexer. The review-generator role lives on the host
+# image (`Dockerfile.reviewer`) which has Skepthical installed. Detect this at
+# import time so we can fast-fail paper-repo webhooks on Cloud Run instead of
+# spawning a background thread that immediately ImportErrors.
+try:
+    import skepthical  # type: ignore  # noqa: F401
+    _SKEPTHICAL_AVAILABLE = True
+except ImportError:
+    _SKEPTHICAL_AVAILABLE = False
+
 # --- Concurrency guard: prevent duplicate reviews for the same paper ---
+# Mirrored to the active_reviews table in SQLite so the cap survives restarts.
 _active_reviews: set[str] = set()
 _active_reviews_lock = threading.Lock()
 _MAX_CONCURRENT_REVIEWS = 3
+
+
+def init_active_reviews_state() -> None:
+    """Wipe stale active_reviews rows from prior PIDs and load survivors.
+
+    Called once from the app factory after init_db. Any row whose pid is not
+    the current process can't still be running (its owner is gone), so we
+    clear it. Whatever's left is treated as in-flight by the in-memory guard.
+    """
+    from review_browse.services.database import (
+        list_active_reviews, reset_active_reviews_for_pid,
+    )
+    cleared = reset_active_reviews_for_pid(os.getpid())
+    if cleared:
+        log.info("init_active_reviews_state: cleared %d stale rows from prior pid", cleared)
+    survivors = list_active_reviews()
+    with _active_reviews_lock:
+        _active_reviews.clear()
+        _active_reviews.update(r["repo"] for r in survivors)
+    if survivors:
+        log.info("init_active_reviews_state: loaded %d in-flight reviews", len(survivors))
 
 
 def _verify_signature(payload: bytes, signature_header: str, secret: str) -> bool:
@@ -77,40 +111,85 @@ def github_webhook() -> Response:
 
 
 def _handle_review_repo(org_name: str, repo_name: str) -> Response:
-    """Scrape and index a review repo (same pattern as arxiv-browse)."""
-    from review_browse.services.database import get_db, sync_to_gcs
-    from review_browse.services.scraper import scrape_single_repo, upsert_review
+    """Schedule indexing of a review repo in a background thread.
 
-    meta = scrape_single_repo(org_name, repo_name)
-    if not meta:
-        log.info("No review metadata found for %s/%s", org_name, repo_name)
-        return Response("no review metadata", status=204)
-
-    conn = get_db()
+    The full ingest path runs an OpenAI math-sanitization call that can take
+    tens of seconds, sometimes more. GitHub gives webhook handlers only ~10
+    seconds before declaring the delivery a failure (and won't retry on a 500
+    fast enough either), so we acknowledge the webhook immediately with 202
+    and do all the slow work asynchronously.
+    """
     gcs_bucket = current_app.config.get("GCS_BUCKET", "parallel-review")
+    app = current_app._get_current_object()  # capture for the thread
 
-    rx_id, version, action = upsert_review(conn, meta, org_name, gcs_bucket=gcs_bucket)
-
-    if action != "unchanged":
-        if not sync_to_gcs():
-            log.error("GCS sync failed after indexing %s — returning 500 so GitHub retries", rx_id)
-            return Response(
-                f'{{"review_id":"{rx_id}","version":{version},"action":"{action}","gcs_sync":false}}',
-                status=500,
-                mimetype="application/json",
-            )
+    thread = threading.Thread(
+        target=_index_review_background,
+        args=(app, org_name, repo_name, gcs_bucket),
+        daemon=True,
+        name=f"index-{repo_name[:30]}",
+    )
+    thread.start()
 
     return Response(
-        f'{{"review_id":"{rx_id}","version":{version},"action":"{action}"}}',
-        status=200,
+        f'{{"action":"indexing_started","repo":"{repo_name}"}}',
+        status=202,
         mimetype="application/json",
     )
+
+
+def _index_review_background(app, org_name: str, repo_name: str, gcs_bucket: str) -> None:
+    """Background-thread review-repo ingest. Logs failures, never crashes."""
+    from review_browse.services.database import get_db_standalone, sync_to_gcs
+    from review_browse.services.scraper import scrape_single_repo, upsert_review
+
+    log.info("[index-bg] Indexing %s/%s", org_name, repo_name)
+    try:
+        meta = scrape_single_repo(org_name, repo_name)
+        if not meta:
+            log.info("[index-bg] No review metadata for %s/%s", org_name, repo_name)
+            return
+
+        conn = get_db_standalone()
+        try:
+            rx_id, version, action = upsert_review(conn, meta, org_name, gcs_bucket=gcs_bucket)
+        finally:
+            conn.close()
+
+        if action != "unchanged":
+            if not sync_to_gcs():
+                log.warning(
+                    "[index-bg] GCS sync skipped/failed for %s — local DB has the row "
+                    "but it will not propagate to other instances until they re-scrape",
+                    rx_id,
+                )
+            log.info("[index-bg] Indexed %s as %s (action=%s, version=%d)",
+                     repo_name, rx_id, action, version)
+        else:
+            log.info("[index-bg] %s unchanged", rx_id)
+    except Exception as exc:
+        log.error("[index-bg] FAILED to index %s/%s: %s", org_name, repo_name, exc, exc_info=True)
 
 
 def _handle_paper_repo(org_name: str, repo_name: str) -> Response:
     """Fetch paper PDF and run Skepthical review in a background thread."""
     import re
     import urllib.request
+
+    from review_browse.services.database import (
+        register_active_review, unregister_active_review,
+    )
+
+    # --- Guard: this deployment cannot generate reviews ---
+    # On Cloud Run (lightweight image) Skepthical isn't installed. Bail out
+    # cleanly with 204 instead of spawning a background thread that will just
+    # ImportError and silently leave the slot half-occupied.
+    if not _SKEPTHICAL_AVAILABLE:
+        log.info("Skepthical not installed; ignoring paper webhook for %s/%s",
+                 org_name, repo_name)
+        return Response(
+            '{"action":"ignored","reason":"skepthical_not_installed"}',
+            status=204, mimetype="application/json",
+        )
 
     # --- Guard: already reviewing this paper? Claim slot atomically ---
     with _active_reviews_lock:
@@ -127,8 +206,13 @@ def _handle_paper_repo(org_name: str, repo_name: str) -> Response:
                 f'{{"action":"rejected","reason":"max concurrent reviews"}}',
                 status=503, mimetype="application/json",
             )
-        # Claim the slot immediately to prevent races
+        # Claim the slot immediately to prevent races. Persist to DB so the
+        # cap survives container restarts.
         _active_reviews.add(repo_name)
+    try:
+        register_active_review(repo_name)
+    except Exception as exc:
+        log.warning("register_active_review failed for %s: %s", repo_name, exc)
 
     # --- Guard: already has a review repo on GitHub? ---
     try:
@@ -143,6 +227,10 @@ def _handle_paper_repo(org_name: str, repo_name: str) -> Response:
             log.info("Paper %s already has review repo review-%s, skipping", repo_name, repo_name)
             with _active_reviews_lock:
                 _active_reviews.discard(repo_name)
+            try:
+                unregister_active_review(repo_name)
+            except Exception:
+                pass
             return Response(
                 f'{{"action":"skipped","reason":"review repo exists"}}',
                 status=200, mimetype="application/json",
@@ -403,17 +491,46 @@ def _run_review_background(org_name: str, repo_name: str):
         token = os.environ.get("GITHUB_TOKEN", "")
         org = org_name
 
-        def github_request(method, path, body=None):
+        def github_request(method, path, body=None, max_retries=4):
+            """GitHub API call with retry on 5xx, 429, and network errors.
+
+            GitHub occasionally returns 502/503 for a few seconds at a time.
+            Without a retry the review is permanently dropped (the webhook
+            handler already returned 202, so GitHub will not redeliver).
+            """
             url = f"https://api.github.com{path}"
             data = json.dumps(body).encode() if body else None
-            req = urllib.request.Request(url, data=data, method=method, headers={
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-                "Content-Type": "application/json",
-            })
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                return json.loads(resp.read()) if resp.length != 0 else {}
+            last_exc = None
+            for attempt in range(max_retries):
+                req = urllib.request.Request(url, data=data, method=method, headers={
+                    "Authorization": f"Bearer {token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Content-Type": "application/json",
+                })
+                try:
+                    with urllib.request.urlopen(req, timeout=30) as resp:
+                        return json.loads(resp.read()) if resp.length != 0 else {}
+                except urllib.error.HTTPError as e:
+                    if e.code in (429, 500, 502, 503, 504):
+                        retry_after = e.headers.get("Retry-After") if hasattr(e, "headers") else None
+                        try:
+                            delay = float(retry_after) if retry_after else (2 ** attempt)
+                        except ValueError:
+                            delay = 2 ** attempt
+                        log.warning("[review-bg] github %s %s -> HTTP %d, retry %d/%d in %.1fs",
+                                    method, path, e.code, attempt + 1, max_retries, delay)
+                        last_exc = e
+                        _time.sleep(delay)
+                        continue
+                    raise
+                except urllib.error.URLError as e:
+                    log.warning("[review-bg] github %s %s -> network error: %s, retry %d/%d",
+                                method, path, e, attempt + 1, max_retries)
+                    last_exc = e
+                    _time.sleep(2 ** attempt)
+                    continue
+            raise last_exc or RuntimeError(f"github_request: exhausted retries for {method} {path}")
 
         # Check if review repo already exists (shouldn't due to guard, but be safe)
         try:
@@ -428,75 +545,92 @@ def _run_review_background(org_name: str, repo_name: str):
         review_repo_url = f"https://github.com/{org}/{review_repo_name}"
         review_pages_url = f"https://{org.lower()}.github.io/{review_repo_name}/"
 
-        # Create repo
+        # Create repo + populate it. Wrapped in a try/except so any failure
+        # AFTER repo creation (build script crash, git push fail, etc.) deletes
+        # the orphan repo from GitHub instead of leaving an empty/half-pushed
+        # one that blocks future review attempts via the "review repo exists"
+        # guard.
+        repo_created = False
         try:
             github_request("POST", f"/orgs/{org}/repos", {
                 "name": review_repo_name,
                 "private": False,
                 "description": f"Review: {title[:240]}",
             })
-        except Exception as e:
-            log.error("[review-bg] Failed to create repo %s: %s", review_repo_name, e)
-            return
+            repo_created = True
 
-        _time.sleep(3)
+            _time.sleep(3)
 
-        # Build page
-        result = subprocess.run(
-            [sys.executable, build_script, publish_dir,
-             "--repo-url", review_repo_url,
-             "--author", author,
-             "--title", title,
-             "--abstract", abstract,
-             "--paper-pages-url", pages_url],
-            capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            log.error("[review-bg] build_review_page.py failed: %s", result.stderr[:500])
-
-        # README
-        with open(os.path.join(publish_dir, "README.md"), "w") as f:
-            f.write(f"# Review: {title}\n\n**Reviewer:** Skepthical\n"
-                    f"**Paper Author:** {author}\n\n"
-                    f"**[View Review]({review_pages_url})**\n\n"
-                    f"**[View Paper]({pages_url})**\n")
-
-        with open(os.path.join(publish_dir, ".gitignore"), "w") as f:
-            f.write("*.npz\n*.npy\n*.pkl\n*.h5\n*.hdf5\n*.csv\n__pycache__/\n")
-
-        # Git push (mask token from any error output)
-        git_name = os.environ.get("SCIENTIST_NAME", "skepthical")
-        git_email = os.environ.get("GIT_EMAIL", f"{git_name}@parallelscience.org")
-        url_with_token = f"https://{token}@github.com/{org}/{review_repo_name}.git"
-
-        def git(*args):
+            # Build page
             result = subprocess.run(
-                ["git"] + list(args), cwd=publish_dir,
+                [sys.executable, build_script, publish_dir,
+                 "--repo-url", review_repo_url,
+                 "--author", author,
+                 "--title", title,
+                 "--abstract", abstract,
+                 "--paper-pages-url", pages_url],
                 capture_output=True, text=True,
             )
             if result.returncode != 0:
-                # Mask token in error messages
-                stderr = result.stderr.replace(token, "***") if token else result.stderr
-                raise RuntimeError(f"git {' '.join(args)}: {stderr}")
+                raise RuntimeError(
+                    f"build_review_page.py failed: {result.stderr[:500]}"
+                )
 
-        git("init")
-        git("config", "user.name", git_name)
-        git("config", "user.email", git_email)
-        git("add", "-A")
-        git("commit", "-m", f"Review: {title[:120]}")
-        git("branch", "-M", "main")
-        git("remote", "add", "origin", url_with_token)
-        git("-c", "credential.helper=", "push", "-u", "origin", "main")
+            # README
+            with open(os.path.join(publish_dir, "README.md"), "w") as f:
+                f.write(f"# Review: {title}\n\n**Reviewer:** Skepthical\n"
+                        f"**Paper Author:** {author}\n\n"
+                        f"**[View Review]({review_pages_url})**\n\n"
+                        f"**[View Paper]({pages_url})**\n")
 
-        # Enable Pages
-        try:
-            github_request("POST", f"/repos/{org}/{review_repo_name}/pages", {
-                "source": {"branch": "main", "path": "/docs"}
-            })
-        except Exception:
-            pass
+            with open(os.path.join(publish_dir, ".gitignore"), "w") as f:
+                f.write("*.npz\n*.npy\n*.pkl\n*.h5\n*.hdf5\n*.csv\n__pycache__/\n")
 
-        log.info("[review-bg] Published review: %s -> %s", repo_name, review_repo_url)
+            # Git push (mask token from any error output)
+            git_name = os.environ.get("SCIENTIST_NAME", "skepthical")
+            git_email = os.environ.get("GIT_EMAIL", f"{git_name}@parallelscience.org")
+            url_with_token = f"https://{token}@github.com/{org}/{review_repo_name}.git"
+
+            def git(*args):
+                result = subprocess.run(
+                    ["git"] + list(args), cwd=publish_dir,
+                    capture_output=True, text=True,
+                )
+                if result.returncode != 0:
+                    stderr = result.stderr.replace(token, "***") if token else result.stderr
+                    raise RuntimeError(f"git {' '.join(args)}: {stderr}")
+
+            git("init")
+            git("config", "user.name", git_name)
+            git("config", "user.email", git_email)
+            git("add", "-A")
+            git("commit", "-m", f"Review: {title[:120]}")
+            git("branch", "-M", "main")
+            git("remote", "add", "origin", url_with_token)
+            git("-c", "credential.helper=", "push", "-u", "origin", "main")
+
+            # Enable Pages — non-fatal if it fails, the repo is still useful.
+            try:
+                github_request("POST", f"/repos/{org}/{review_repo_name}/pages", {
+                    "source": {"branch": "main", "path": "/docs"}
+                })
+            except Exception as exc:
+                log.warning("[review-bg] enable Pages failed for %s: %s", review_repo_name, exc)
+
+            log.info("[review-bg] Published review: %s -> %s", repo_name, review_repo_url)
+
+        except Exception as publish_exc:
+            log.error("[review-bg] Publish failed for %s: %s", repo_name, publish_exc)
+            if repo_created:
+                # Roll back the partial repo so the next webhook / cron run
+                # can retry from a clean slate.
+                try:
+                    github_request("DELETE", f"/repos/{org}/{review_repo_name}")
+                    log.info("[review-bg] Rolled back orphan repo %s", review_repo_name)
+                except Exception as cleanup_exc:
+                    log.error("[review-bg] FAILED to rollback orphan repo %s: %s — manual cleanup needed",
+                              review_repo_name, cleanup_exc)
+            raise
 
     except Exception as e:
         log.error("[review-bg] Review failed for %s: %s", repo_name, e)
@@ -506,6 +640,11 @@ def _run_review_background(org_name: str, repo_name: str):
         shutil.rmtree(work_dir, ignore_errors=True)
         with _active_reviews_lock:
             _active_reviews.discard(repo_name)
+        try:
+            from review_browse.services.database import unregister_active_review
+            unregister_active_review(repo_name)
+        except Exception as exc:
+            log.warning("[review-bg] unregister_active_review failed for %s: %s", repo_name, exc)
 
 
 # ---------------------------------------------------------------------------
@@ -516,21 +655,26 @@ def _run_review_background(org_name: str, repo_name: str):
 def cron_rescrape() -> Response:
     """Re-scrape all review repos and sync DB to GCS.
 
-    Intended to be called by Cloud Scheduler or similar cron.
-    Requires WEBHOOK_SECRET as Bearer token or X-Cron-Secret header.
-    Also allows Google Cloud Scheduler (User-Agent: Google-Cloud-Scheduler).
+    Intended to be called by Cloud Scheduler or similar cron. Authenticates
+    with WEBHOOK_SECRET via either an `Authorization: Bearer <secret>` header
+    or an `X-Cron-Secret: <secret>` header. Cloud Scheduler can be configured
+    to send the bearer token; do NOT trust the User-Agent header for auth
+    since it is attacker-controlled.
     """
-    # Auth check: allow Cloud Scheduler, or require the webhook secret
     secret = current_app.config.get("WEBHOOK_SECRET", "")
-    user_agent = request.headers.get("User-Agent", "")
+    if not secret:
+        log.error("WEBHOOK_SECRET not configured — rejecting cron rescrape")
+        return Response("server misconfigured", status=500)
+
     auth_header = request.headers.get("Authorization", "")
-    cron_secret = request.headers.get("X-Cron-Secret", "")
+    cron_secret_header = request.headers.get("X-Cron-Secret", "")
 
-    is_cloud_scheduler = "Google-Cloud-Scheduler" in user_agent
-    is_bearer_match = secret and auth_header == f"Bearer {secret}"
-    is_header_match = secret and cron_secret == secret
+    expected_bearer = f"Bearer {secret}"
+    is_bearer_match = hmac.compare_digest(auth_header, expected_bearer)
+    is_header_match = hmac.compare_digest(cron_secret_header, secret)
 
-    if not (is_cloud_scheduler or is_bearer_match or is_header_match):
+    if not (is_bearer_match or is_header_match):
+        log.warning("Cron rescrape: unauthorized request from %s", request.remote_addr)
         return Response("Unauthorized", status=403)
 
     from review_browse.services.database import get_db, sync_to_gcs

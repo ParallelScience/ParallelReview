@@ -33,11 +33,16 @@ import time
 import urllib.request
 
 GITHUB_ORG = os.environ.get("GITHUB_ORG", "ParallelScience")
-PARALLEL_ARXIV_DB = os.environ.get(
-    "PARALLEL_ARXIV_DB",
-    os.path.join(os.path.dirname(__file__), "..", "..",
-                 "arxiv-browse", "browse", "data", "papers.db"),
+
+# Canonical Parallel ArXiv papers DB lives in GCS — arxiv-browse on Cloud Run
+# uploads it on every webhook ingest. Always read from the public URL so the
+# review scanner sees the same paper set as the live papers.parallelscience.org,
+# instead of trusting a stale local file copy.
+PARALLEL_ARXIV_DB_URL = os.environ.get(
+    "PARALLEL_ARXIV_DB_URL",
+    "https://storage.googleapis.com/parallel-arxiv-pdfs/papers.db",
 )
+
 PARALLEL_REVIEW_DB = os.environ.get(
     "PARALLEL_REVIEW_DB",
     os.path.join(os.path.dirname(__file__), "..",
@@ -46,21 +51,33 @@ PARALLEL_REVIEW_DB = os.environ.get(
 
 
 def get_all_papers() -> list[dict]:
-    """Fetch all current papers from the Parallel ArXiv database."""
-    if not os.path.exists(PARALLEL_ARXIV_DB):
-        # Fallback: scrape from the API
-        print(f"ArXiv DB not found at {PARALLEL_ARXIV_DB}, scraping from GitHub...")
-        return _scrape_papers_from_github()
+    """Fetch all current papers from the Parallel ArXiv DB.
 
-    conn = sqlite3.connect(PARALLEL_ARXIV_DB)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT px_id, title, author, repo, pages_url, pdf_url, date "
-        "FROM papers WHERE is_current = 1 ORDER BY date DESC"
-    ).fetchall()
-    papers = [dict(r) for r in rows]
-    conn.close()
-    return papers
+    Downloads the canonical SQLite DB from GCS on every call so the scanner
+    sees the live arxiv-browse paper set, not a stale snapshot. Falls back to
+    scraping the GitHub org if the download fails.
+    """
+    try:
+        local_path = os.path.join(tempfile.gettempdir(), "parallel_arxiv_papers.db")
+        urllib.request.urlretrieve(PARALLEL_ARXIV_DB_URL, local_path)
+        size = os.path.getsize(local_path)
+        # Open immutable + read-only via URI so SQLite does not try to create
+        # the -wal/-shm sidecars (and so concurrent re-downloads of the same
+        # path are safe).
+        uri = f"file:{local_path}?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT px_id, title, author, repo, pages_url, pdf_url, date "
+            "FROM papers WHERE is_current = 1 ORDER BY date DESC"
+        ).fetchall()
+        papers = [dict(r) for r in rows]
+        conn.close()
+        print(f"ArXiv DB: {len(papers)} papers from {PARALLEL_ARXIV_DB_URL} ({size} B)")
+        return papers
+    except Exception as exc:
+        print(f"WARNING: failed to fetch arxiv DB ({exc}); falling back to GitHub scrape")
+        return _scrape_papers_from_github()
 
 
 def _scrape_papers_from_github() -> list[dict]:
@@ -164,12 +181,31 @@ def get_reviewed_repos() -> set[str]:
     return reviewed
 
 
+PDF_DOWNLOAD_TIMEOUT_S = 120
+PDF_DOWNLOAD_MAX_BYTES = 100 * 1024 * 1024  # 100 MB hard cap
+
+
 def download_pdf(url: str, dest: str) -> bool:
-    """Download a PDF to a local path."""
+    """Download a PDF to a local path with a timeout and size cap.
+
+    `urllib.request.urlretrieve` has neither a timeout nor a size limit, so a
+    slow or hostile server could wedge the cron forever. Use `urlopen` with a
+    socket timeout and chunked reads with a max-bytes guard.
+    """
     try:
-        urllib.request.urlretrieve(url, dest)
-        size = os.path.getsize(dest)
-        if size < 100:
+        with urllib.request.urlopen(url, timeout=PDF_DOWNLOAD_TIMEOUT_S) as resp:
+            with open(dest, "wb") as fh:
+                total = 0
+                while True:
+                    chunk = resp.read(1 << 20)  # 1 MB
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > PDF_DOWNLOAD_MAX_BYTES:
+                        print(f"  Aborting PDF download: exceeded {PDF_DOWNLOAD_MAX_BYTES} bytes")
+                        return False
+                    fh.write(chunk)
+        if os.path.getsize(dest) < 100:
             return False
         return True
     except Exception as e:
@@ -358,11 +394,20 @@ def publish_review(paper: dict, review_md: str, review_pdf: str, paper_pdf: str,
         except Exception:
             pass
 
-    # Slugify repo name
-    slug = re.sub(r'[^a-z0-9\s-]', '', title.lower())
-    slug = re.sub(r'\s+', '-', slug.strip())
-    slug = re.sub(r'-{2,}', '-', slug)[:60].rstrip('-') or "paper"
-    repo_name = f"review-{slug}"
+    # Use the paper's GitHub repo name directly so the review repo is a 1:1
+    # mirror (`review-{paper_repo}`). This matches the webhook handler in
+    # review_browse/routes/webhook.py and avoids a second naming scheme that
+    # would otherwise drift from the webhook-published reviews and break
+    # "already reviewed" detection. Fall back to a title-derived slug only
+    # if the paper has no repo name (shouldn't happen in practice).
+    paper_repo = (paper.get("repo") or "").strip()
+    if not paper_repo:
+        slug = re.sub(r'[^a-z0-9\s-]', '', title.lower())
+        slug = re.sub(r'\s+', '-', slug.strip())
+        slug = re.sub(r'-{2,}', '-', slug).rstrip('-') or "paper"
+        paper_repo = slug
+    # GitHub repo names are capped at 100 chars; cap defensively.
+    repo_name = f"review-{paper_repo}"[:100]
 
     # Check for collision
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -549,13 +594,26 @@ def main():
     else:
         reviewed = get_reviewed_repos()
         print(f"Found {len(reviewed)} existing reviews")
+        # Pre-compute long-prefix entries (>=30 chars) to handle the
+        # title-vs-repo-name truncation discrepancy: this script publishes
+        # `review-{slug_from_title[:60]}`, while the webhook handler publishes
+        # `review-{paper_repo_name}`. Exact equality misses pairs where the
+        # title-derived slug is a 60-char truncation that's a prefix of the
+        # paper's untruncated repo name.
+        long_reviewed = [e for e in reviewed if isinstance(e, str) and len(e) >= 30]
         unreviewed = []
         for p in papers:
             repo = p.get("repo", "")
             pages_url = p.get("pages_url", "")
             # Check by repo slug match
             slug = re.sub(r'[^a-z0-9-]', '', repo.lower())
-            if slug in reviewed or repo in reviewed or pages_url in reviewed:
+            already = (
+                slug in reviewed
+                or repo in reviewed
+                or pages_url in reviewed
+                or any(slug.startswith(e) or repo.startswith(e) for e in long_reviewed)
+            )
+            if already:
                 print(f"  Already reviewed: {p['title'][:60]}")
             else:
                 unreviewed.append(p)

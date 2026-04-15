@@ -68,6 +68,17 @@ CREATE INDEX IF NOT EXISTS idx_reviews_current ON reviews(is_current) WHERE is_c
 CREATE INDEX IF NOT EXISTS idx_reviews_author ON reviews(paper_author) WHERE is_current = 1;
 CREATE INDEX IF NOT EXISTS idx_reviews_repo ON reviews(repo);
 CREATE INDEX IF NOT EXISTS idx_reviews_px_id ON reviews(px_id) WHERE is_current = 1;
+
+-- In-flight review tracking. Persisted so the concurrency guard survives
+-- container restarts (an in-memory set leaks slots when a daemon thread dies
+-- mid-review). Cleaned up at startup; entries older than the staleness window
+-- are also GC'd by gc_stale_active_reviews().
+CREATE TABLE IF NOT EXISTS active_reviews (
+    repo         TEXT PRIMARY KEY,
+    started_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    pid          INTEGER NOT NULL DEFAULT 0,
+    hostname     TEXT NOT NULL DEFAULT ''
+);
 """
 
 
@@ -121,13 +132,56 @@ def _download_from_gcs() -> bool:
 
 
 def _download_from_gcs_to(dest: str) -> bool:
-    """Download the DB from GCS to a specific path via public URL."""
+    """Download the DB from GCS to a specific path.
+
+    Prefers the authenticated google-cloud-storage SDK because the public
+    URL (`https://storage.googleapis.com/...`) is served through GCS's edge
+    cache, which honors the object's `Cache-Control: public, max-age=3600`
+    and can serve stale bytes for up to an hour after an upload. Using the
+    SDK bypasses the edge cache entirely and always returns the current
+    object generation, so a fresh cold-start sees a fresh DB.
+
+    Falls back to the public URL if the SDK or credentials aren't available
+    (e.g. local container without ADC) — the edge-cache staleness is
+    tolerable there because the local container isn't user-facing.
+    """
     if not _GCS_DB_URI:
         return False
+
+    # Prefer authenticated SDK path
+    try:
+        from google.cloud import storage
+        from google.auth.exceptions import DefaultCredentialsError
+        try:
+            client = storage.Client()
+        except DefaultCredentialsError:
+            client = None
+        if client is not None:
+            bucket_name, blob_path = _parse_gcs_uri(_GCS_DB_URI)
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(blob_path)
+            blob.reload()  # fetches the current generation
+            generation = blob.generation
+            print(f"[RX] Downloading DB via SDK: gs://{bucket_name}/{blob_path} "
+                  f"(gen={generation}) -> {dest}", flush=True)
+            blob.download_to_filename(dest)
+            size = os.path.getsize(dest)
+            c = sqlite3.connect(dest)
+            count = c.execute("SELECT count(*) FROM reviews").fetchone()[0]
+            c.close()
+            print(f"[RX] Downloaded DB: {size} bytes, {count} reviews "
+                  f"(gen={generation})", flush=True)
+            return True
+    except Exception as exc:
+        print(f"[RX] SDK download path failed ({exc}); falling back to public URL",
+              flush=True)
+
+    # Fallback: public URL (subject to edge cache)
     try:
         import urllib.request
         url = _gcs_public_url()
-        print(f"[RX] Downloading DB from {url} -> {dest}", flush=True)
+        print(f"[RX] Downloading DB from {url} -> {dest}  (public URL — may be cached)",
+              flush=True)
         urllib.request.urlretrieve(url, dest)
         size = os.path.getsize(dest)
         c = sqlite3.connect(dest)
@@ -141,22 +195,86 @@ def _download_from_gcs_to(dest: str) -> bool:
 
 
 def sync_to_gcs() -> bool:
+    """Atomically upload the local SQLite DB to GCS.
+
+    A direct overwrite of the canonical blob is unsafe: a network failure
+    mid-upload would leave a truncated/corrupt blob, and the next cold start
+    would download that and the app would refuse to open it. We instead:
+
+      1. Checkpoint WAL into the main DB file.
+      2. Validate the local DB with `PRAGMA integrity_check`.
+      3. Upload to a temporary blob `<path>.tmp.<pid>`.
+      4. Server-side copy `tmp -> canonical` with `if_generation_match=0`
+         deferred — we just rewrite to the canonical path which is atomic
+         from the perspective of any concurrent reader.
+      5. Delete the temp blob.
+
+    Any failure short-circuits and the canonical blob remains untouched.
+    """
     if not _GCS_DB_URI:
         log.warning("[RX] sync_to_gcs called but GCS_DB_URI is not set — reviews will NOT persist across deploys!")
         return False
+
+    # 1. Checkpoint WAL so the main DB file contains everything.
     conn = _connect()
     try:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     finally:
         conn.close()
+
+    # 2. Validate the local DB before we ship it.
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        try:
+            row = conn.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            conn.close()
+        if not row or row[0] != "ok":
+            log.error("[RX] sync_to_gcs aborted: integrity_check returned %r", row)
+            return False
+    except Exception as exc:
+        log.error("[RX] sync_to_gcs aborted: integrity_check raised: %s", exc, exc_info=True)
+        return False
+
     try:
         from google.cloud import storage
+        from google.auth.exceptions import DefaultCredentialsError
+    except ImportError as exc:
+        log.warning("[RX] sync_to_gcs: google-cloud-storage not installed: %s", exc)
+        return False
+
+    try:
         bucket_name, blob_path = _parse_gcs_uri(_GCS_DB_URI)
-        client = storage.Client()
+        try:
+            client = storage.Client()
+        except DefaultCredentialsError as exc:
+            # Local container has no service-account credentials. Cloud Run is
+            # the canonical writer of the GCS DB; the local container only
+            # needs its own SQLite copy. Return True so the caller does not
+            # treat this as an error and emit 5xx (which would cause GitHub to
+            # retry-storm us with deliveries we cannot satisfy).
+            log.info("[RX] sync_to_gcs: no GCP credentials, skipping (this is normal "
+                     "for the local container; Cloud Run handles the canonical sync)")
+            return True
         bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_path)
-        blob.upload_from_filename(_DB_PATH)
+        tmp_path = f"{blob_path}.tmp.{os.getpid()}"
+        tmp_blob = bucket.blob(tmp_path)
+
+        # 3. Upload to a temporary blob first.
+        tmp_blob.upload_from_filename(_DB_PATH)
         size = os.path.getsize(_DB_PATH)
+
+        # 4. Server-side copy to the canonical name. GCS object writes are
+        # atomic from a reader's perspective: a concurrent download will see
+        # either the old version or the new one, never a partial/torn write.
+        bucket.copy_blob(tmp_blob, bucket, new_name=blob_path)
+
+        # 5. Best-effort cleanup of the temp blob; failure is non-fatal.
+        try:
+            tmp_blob.delete()
+        except Exception as exc:
+            log.warning("[RX] sync_to_gcs: failed to delete temp blob %s: %s", tmp_path, exc)
+
         print(f"[RX] Uploaded DB ({size} bytes) to gs://{bucket_name}/{blob_path}", flush=True)
         return True
     except Exception as exc:
@@ -247,6 +365,70 @@ def init_db(app: Flask) -> None:
 
     app.teardown_appcontext(close_db)
     log.info("Initialized reviews database at %s (GCS: %s)", _DB_PATH, _GCS_DB_URI or "none")
+
+
+# ---------------------------------------------------------------------------
+# Active-review tracking (persistent concurrency guard)
+# ---------------------------------------------------------------------------
+#
+# The webhook handler spawns a daemon thread per Skepthical review, and tracks
+# in-flight reviews in an in-memory set so it can enforce a concurrency cap and
+# de-duplicate webhook redeliveries. The set is lost on container restart, and
+# daemon threads die ungracefully on SIGTERM, so without persistence:
+#   * Slots can leak forever (the in-memory cap drifts)
+#   * Restarted containers can re-launch reviews for papers that are mid-flight
+#     elsewhere (rare with one container; impossible to detect anyway)
+#
+# We persist a row per in-flight review keyed by paper repo. On startup we wipe
+# any rows belonging to a previous PID — they cannot still be running because
+# their owning process is gone — and rebuild the in-memory state from what is
+# left. This bounds the worst-case stale-slot lifetime to "until next restart".
+
+def register_active_review(repo: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO active_reviews (repo, started_at, pid, hostname) "
+            "VALUES (?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), ?, ?)",
+            (repo, os.getpid(), os.uname().nodename),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def unregister_active_review(repo: str) -> None:
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM active_reviews WHERE repo = ?", (repo,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def reset_active_reviews_for_pid(current_pid: int) -> int:
+    """Wipe any active_reviews rows that don't belong to the current process.
+
+    Called once at startup. Returns the number of stale rows deleted.
+    """
+    conn = _connect()
+    try:
+        cur = conn.execute("DELETE FROM active_reviews WHERE pid != ?", (current_pid,))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def list_active_reviews() -> list[dict]:
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT repo, started_at, pid, hostname FROM active_reviews ORDER BY started_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def init_standalone(db_path: str) -> None:
