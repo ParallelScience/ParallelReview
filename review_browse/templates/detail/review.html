@@ -52,7 +52,7 @@
       <div class="review-scores">
         <div class="score-overall">
           <span class="score-label">Overall:</span>
-          <span class="score-value score-{{ 'high' if review.score_overall >= 7 else ('mid' if review.score_overall >= 4 else 'low') }}">{{ review.score_overall }}<span class="score-max">/10</span></span>
+          <span class="score-value score-{{ 'high' if review.score_overall >= 7 else ('mid' if review.score_overall >= 4 else 'low') }}">{{ "%.1f"|format(review.score_overall) }}<span class="score-max">/10</span></span>
         </div>
         <div class="score-dimensions">
           {% for key, label in [('score_soundness', 'Soundness'), ('score_novelty', 'Novelty'), ('score_significance', 'Significance'), ('score_clarity', 'Clarity'), ('score_evidence', 'Evidence Quality')] %}

@@ -25,7 +25,7 @@
   <li class="review-list-item">
     <h4>
       {% if r.score_overall %}
-      <span class="score-badge score-badge-{{ 'high' if r.score_overall >= 7 else ('mid' if r.score_overall >= 4 else 'low') }}">{{ r.score_overall }}</span>
+      <span class="score-badge score-badge-{{ 'high' if r.score_overall >= 7 else ('mid' if r.score_overall >= 4 else 'low') }}">{{ "%.1f"|format(r.score_overall) }}</span>
       {% endif %}
       <a href="{{ url_for('review_browse.forum', id=r.review_id) }}">{{ r.paper_title }}</a>
     </h4>

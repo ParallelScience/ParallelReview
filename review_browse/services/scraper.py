@@ -493,6 +493,26 @@ def download_pdf(
 # Upsert logic
 # ---------------------------------------------------------------------------
 
+_OVERALL_DIMS = ("soundness", "novelty", "significance", "clarity", "evidence_quality")
+
+
+def compute_overall(scores: dict) -> float | None:
+    """Overall score = mean of the 5 dimension scores, rounded to 1 decimal.
+
+    The five dimensions are integers (1–10) produced by the paper_scorer LLM;
+    `overall` is derived so the UI can display a one-decimal aggregate rather
+    than another integer from the model. Returns None if any dimension is
+    missing, so the caller can fall back to the existing stored value.
+    """
+    try:
+        vals = [scores.get(k) for k in _OVERALL_DIMS]
+        if any(v is None for v in vals):
+            return None
+        return round(sum(float(v) for v in vals) / len(vals), 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def upsert_review(
     conn: sqlite3.Connection,
     meta: dict,
@@ -519,6 +539,9 @@ def upsert_review(
     if existing and existing["content_hash"] == content_hash:
         # Even if content is unchanged, update scores if they're newly available
         new_scores = meta.get("scores") or {}
+        computed_overall = compute_overall(new_scores)
+        if computed_overall is not None:
+            new_scores["overall"] = computed_overall
         if new_scores.get("overall") is not None:
             current_score = conn.execute(
                 "SELECT score_overall FROM reviews WHERE review_id = ? AND is_current = 1",
@@ -572,7 +595,10 @@ def upsert_review(
     # Extract PX ID from the review_id (e.g. "2604.00003-R1" → "2604.00003")
     px_id = review_id.rsplit("-R", 1)[0] if "-R" in review_id else ""
 
-    scores = meta.get("scores") or {}
+    scores = dict(meta.get("scores") or {})
+    computed_overall = compute_overall(scores)
+    if computed_overall is not None:
+        scores["overall"] = computed_overall
 
     conn.execute(
         "INSERT INTO reviews "

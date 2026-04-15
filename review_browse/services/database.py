@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     px_id               TEXT NOT NULL DEFAULT '',
     is_current          INTEGER NOT NULL DEFAULT 1,
     total_cost          REAL,
-    score_overall       INTEGER,
+    score_overall       REAL,
     score_soundness     INTEGER,
     score_novelty       INTEGER,
     score_significance  INTEGER,
@@ -339,7 +339,7 @@ def init_db(app: Flask) -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(reviews)").fetchall()}
         migrations = [
             ("total_cost", "ALTER TABLE reviews ADD COLUMN total_cost REAL"),
-            ("score_overall", "ALTER TABLE reviews ADD COLUMN score_overall INTEGER"),
+            ("score_overall", "ALTER TABLE reviews ADD COLUMN score_overall REAL"),
             ("score_soundness", "ALTER TABLE reviews ADD COLUMN score_soundness INTEGER"),
             ("score_novelty", "ALTER TABLE reviews ADD COLUMN score_novelty INTEGER"),
             ("score_significance", "ALTER TABLE reviews ADD COLUMN score_significance INTEGER"),
@@ -352,6 +352,29 @@ def init_db(app: Flask) -> None:
                 conn.execute(sql)
                 print(f"[RX] Migrated: added {col_name} column to reviews", flush=True)
         conn.commit()
+
+        # Backfill: recompute score_overall as mean of the 5 dimension scores
+        # (soundness, novelty, significance, clarity, evidence), rounded to 1
+        # decimal. Matches the write-time logic in scraper.compute_overall so
+        # existing rows get the same aggregation as new ones. Idempotent:
+        # running with already-correct values is a no-op.
+        cur = conn.execute(
+            "UPDATE reviews "
+            "SET score_overall = round("
+            "  (score_soundness + score_novelty + score_significance "
+            "   + score_clarity + score_evidence) / 5.0, 1) "
+            "WHERE score_soundness IS NOT NULL "
+            "  AND score_novelty IS NOT NULL "
+            "  AND score_significance IS NOT NULL "
+            "  AND score_clarity IS NOT NULL "
+            "  AND score_evidence IS NOT NULL "
+            "  AND (score_overall IS NULL OR score_overall != round("
+            "       (score_soundness + score_novelty + score_significance "
+            "        + score_clarity + score_evidence) / 5.0, 1))"
+        )
+        conn.commit()
+        if cur.rowcount:
+            print(f"[RX] Backfilled score_overall on {cur.rowcount} rows", flush=True)
     finally:
         conn.close()
 
