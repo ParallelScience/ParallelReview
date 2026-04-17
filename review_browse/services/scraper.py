@@ -348,6 +348,35 @@ def _clean_title_math(title: str) -> str:
     return result
 
 
+_BROKEN_TITLE_SECTION_RE = re.compile(r"^\d+(\.\d+)*\.?\s+")
+_BROKEN_TITLE_ALIASES = {
+    "paper", "untitled",
+    "abstract", "introduction", "background", "methods", "method",
+    "methodology", "results", "discussion", "conclusion", "conclusions",
+    "summary", "references", "bibliography",
+    "acknowledgements", "acknowledgments", "appendix",
+}
+
+
+def _title_looks_broken(title: str) -> bool:
+    """Detect titles that are obviously not paper titles.
+
+    Filters section headings ('3.2. Foo', '3. RESULTS'), common section-name
+    aliases ('Abstract', 'Introduction'), the Skepthical fallback value
+    ('paper'), and repo slugs (all-lowercase-hyphenated).
+    """
+    s = title.strip()
+    if not s:
+        return True
+    if _BROKEN_TITLE_SECTION_RE.match(s):
+        return True
+    if s.lower().rstrip(".:").strip() in _BROKEN_TITLE_ALIASES:
+        return True
+    if _looks_like_repo_slug(s):
+        return True
+    return False
+
+
 def _extract_title_from_review_md(md_text: str) -> str:
     """Extract the paper title from the first line of review.md.
 
@@ -378,11 +407,18 @@ def scrape_single_repo(org: str, repo: str) -> dict | None:
     review_md = fetch_review_md(org, repo)
     sections = parse_review_md(review_md)
 
-    # Always use the title from review.md — it's the sanitized source of truth
+    # Prefer review.md's title when it's plausible. The HTML <h2> is set from
+    # the paper's own Pages <h1> at build time and is generally correct, but
+    # review.md is "the sanitized source of truth" for math/unicode — so we
+    # use it unless it obviously garbled (section heading, slug, "paper", or
+    # empty). In those cases the HTML title survives untouched.
     if review_md:
         md_title = _extract_title_from_review_md(review_md)
-        if md_title:
+        if md_title and not _title_looks_broken(md_title):
             meta["paper_title"] = md_title
+        elif md_title:
+            log.warning("Ignoring broken review.md title %r for %s/%s; keeping HTML title %r",
+                        md_title, org, repo, meta.get("paper_title", ""))
 
     # If the author is unknown/empty, try scraping the paper's own Pages site
     if meta.get("paper_author", "").lower() in ("unknown", ""):
@@ -531,10 +567,22 @@ def upsert_review(
     review_id = get_or_assign_review_id(conn, paper_repo=paper_repo, review_repo=repo, org=org)
 
     existing = conn.execute(
-        "SELECT version, content_hash FROM reviews "
+        "SELECT version, content_hash, paper_title FROM reviews "
         "WHERE review_id = ? AND is_current = 1",
         (review_id,),
     ).fetchone()
+
+    # Title drift repair: if the scraped title improved (e.g. the scraper's
+    # section-heading filter now rejects a title that was accepted before),
+    # update paper_title in place without creating a new version row.
+    if existing and existing["paper_title"] != meta["paper_title"] and meta["paper_title"]:
+        conn.execute(
+            "UPDATE reviews SET paper_title=? WHERE review_id=? AND is_current=1",
+            (meta["paper_title"], review_id),
+        )
+        conn.commit()
+        log.info("TITLE_FIX %s: %r -> %r", review_id,
+                 existing["paper_title"][:60], meta["paper_title"][:60])
 
     if existing and existing["content_hash"] == content_hash:
         # Even if content is unchanged, update scores if they're newly available

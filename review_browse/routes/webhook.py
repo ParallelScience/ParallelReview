@@ -344,6 +344,7 @@ def _run_review_background(org_name: str, repo_name: str):
 
         params_skepthical = {
             "paper_pdf_file": pdf_path,
+            "paper_title": title,
             "work_dir": work_dir,
             "max_chars": 30000,
             "models": {
