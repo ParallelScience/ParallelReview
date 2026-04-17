@@ -107,10 +107,17 @@ def notes() -> Response:
 
     sort_by = request.args.get("sort", "date")
     reviews = _sort_reviews(reviews, sort_by)
+    # Pass current filter params so sort links can preserve them.
+    filter_params = {}
+    if author:
+        filter_params["content.author"] = author
+    elif px_id:
+        filter_params["content.px_id"] = px_id
     return render_template("list/review_list.html",
                            reviews=reviews,
                            context=context,
                            sort_by=sort_by,
+                           filter_params=filter_params,
                            now=datetime.now().strftime("%a, %d %b %Y")), status.OK, {}
 
 

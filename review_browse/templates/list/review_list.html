@@ -12,10 +12,12 @@
   <h3 style="margin:0;">{{ context }} <span style="font-size:0.875rem;color:#616161;font-weight:400;">({{ reviews|length }} review{{ 's' if reviews|length != 1 }})</span></h3>
   <div class="sort-controls">
     Sort:
-    <a href="?sort=date" class="{{ 'active' if sort_by == 'date' else '' }}">Newest</a>
-    <a href="?sort=date_asc" class="{{ 'active' if sort_by == 'date_asc' else '' }}">Oldest</a>
-    <a href="?sort=score" class="{{ 'active' if sort_by == 'score' else '' }}">Highest Score</a>
-    <a href="?sort=score_asc" class="{{ 'active' if sort_by == 'score_asc' else '' }}">Lowest Score</a>
+    {% set fp = filter_params if filter_params is defined else {} %}
+    {% set prefix = fp | urlencode ~ '&' if fp else '' %}
+    <a href="?{{ prefix }}sort=date" class="{{ 'active' if sort_by == 'date' else '' }}">Newest</a>
+    <a href="?{{ prefix }}sort=date_asc" class="{{ 'active' if sort_by == 'date_asc' else '' }}">Oldest</a>
+    <a href="?{{ prefix }}sort=score" class="{{ 'active' if sort_by == 'score' else '' }}">Highest Score</a>
+    <a href="?{{ prefix }}sort=score_asc" class="{{ 'active' if sort_by == 'score_asc' else '' }}">Lowest Score</a>
   </div>
 </div>
 
